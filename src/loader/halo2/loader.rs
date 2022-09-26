@@ -2,17 +2,23 @@ use crate::{
     loader::{EcPointLoader, LoadedEcPoint, LoadedScalar, Loader, ScalarLoader},
     util::{Curve, Field, FieldOps, Group, Itertools},
 };
+use ff::PrimeField;
 use halo2_curves::CurveAffine;
-use halo2_proofs::circuit;
-use halo2_wrong_ecc::{
-    integer::{
-        rns::{Integer, Rns},
-        IntegerInstructions, Range,
+use halo2_ecc::{
+    bigint::CRTInteger,
+    ecc::{fixed::FixedEccPoint, EccChip, EccPoint},
+    fields::{fp, FieldChip},
+    gates::{
+        flex_gate::FlexGateConfig,
+        range::RangeConfig,
+        Context, GateInstructions,
+        QuantumCell::{Constant, Existing, Witness},
+        RangeInstructions,
     },
-    maingate::{
-        AssignedValue, CombinationOptionCommon, MainGate, MainGateInstructions, RegionCtx, Term,
-    },
-    AssignedPoint, BaseFieldEccChip, EccConfig,
+};
+use halo2_proofs::{
+    circuit::{self, AssignedCell},
+    plonk::Assigned,
 };
 use rand::rngs::OsRng;
 use std::{
@@ -23,345 +29,211 @@ use std::{
     rc::Rc,
 };
 
-const WINDOW_SIZE: usize = 3;
+pub type FpChip<C> = fp::FpConfig<<C as CurveAffine>::ScalarExt, <C as CurveAffine>::Base>;
+pub type FpPoint<C> = CRTInteger<<C as CurveAffine>::ScalarExt>;
 
-#[derive(Clone, Debug)]
+// Sometimes it is useful to know that a cell is really a constant, for optimization purposes
+#[derive(Clone, Debug, Clone, Debug)]
 pub enum Value<T, L> {
     Constant(T),
     Assigned(L),
 }
 
-pub struct Halo2Loader<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> {
-    rns: Rc<Rns<C::Base, C::Scalar, LIMBS, BITS>>,
-    ecc_chip: RefCell<BaseFieldEccChip<C, LIMBS, BITS>>,
-    main_gate: MainGate<C::Scalar>,
-    ctx: RefCell<RegionCtx<'a, 'b, C::Scalar>>,
-    num_ec_point: RefCell<usize>,
-    #[cfg(test)]
-    row_meterings: RefCell<Vec<(String, usize)>>,
+pub struct Halo2Loader<'a, 'b, C: CurveAffine> {
+    pub ecc_chip: EccChip<'a, C::Scalar, FpChip<C>>,
+    pub ctx: &mut Context<'b, C::Scalar>,
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize>
-    Halo2Loader<'a, 'b, C, LIMBS, BITS>
+impl<'a, 'b, C: CurveAffine> Halo2Loader<'a, 'b, C>
+where
+    C::Base: PrimeField,
 {
-    pub fn new(ecc_config: EccConfig, ctx: RegionCtx<'a, 'b, C::Scalar>) -> Rc<Self> {
-        let ecc_chip = BaseFieldEccChip::new(ecc_config);
-        let main_gate = ecc_chip.main_gate();
-        Rc::new(Self {
-            rns: Rc::new(Rns::construct()),
-            ecc_chip: RefCell::new(ecc_chip),
-            main_gate,
-            ctx: RefCell::new(ctx),
-            num_ec_point: RefCell::new(0),
-            #[cfg(test)]
-            row_meterings: RefCell::new(Vec::new()),
-        })
-    }
-
-    pub fn rns(&self) -> Rc<Rns<C::Base, C::Scalar, LIMBS, BITS>> {
-        self.rns.clone()
-    }
-
-    pub fn ecc_chip(&self) -> impl Deref<Target = BaseFieldEccChip<C, LIMBS, BITS>> + '_ {
-        self.ecc_chip.borrow()
-    }
-
-    pub(super) fn ctx_mut(&self) -> impl DerefMut<Target = RegionCtx<'a, 'b, C::Scalar>> + '_ {
-        self.ctx.borrow_mut()
+    pub fn new(field_chip: &'a FpChip<C>, ctx: &mut Context<'b, C::Scalar>) -> Self {
+        Self {
+            ecc_chip: ecc::EccChip::construct(field_chip),
+            ctx,
+        }
     }
 
     pub fn assign_const_scalar(
         self: &Rc<Self>,
         scalar: C::Scalar,
     ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
-        let assigned = self
-            .main_gate
-            .assign_constant(&mut self.ctx_mut(), scalar)
-            .unwrap();
-        self.scalar(Value::Assigned(assigned))
+        let assigned = self.gate().assign_region_smart(
+            self.ctx,
+            vec![Constant(scalar)],
+            vec![],
+            vec![],
+            vec![],
+        )?;
+        self.scalar(Value::Assigned(assigned[0].clone()))
     }
 
     pub fn assign_scalar(
         self: &Rc<Self>,
         scalar: circuit::Value<C::Scalar>,
     ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
-        let assigned = self
-            .main_gate
-            .assign_value(&mut self.ctx_mut(), scalar)
-            .unwrap();
-        self.scalar(Value::Assigned(assigned))
+        let assigned = self.gate().assign_region_smart(
+            self.ctx,
+            vec![Witness(scalar)],
+            vec![],
+            vec![],
+            vec![],
+        )?;
+        self.scalar(Value::Assigned(assigned[0].clone()))
     }
 
     pub fn scalar(
         self: &Rc<Self>,
-        value: Value<C::Scalar, AssignedValue<C::Scalar>>,
-    ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+        value: Value<C::Scalar, AssignedCell<C::Scalar, C::Scalar>>,
+    ) -> Scalar<'a, 'b, C> {
         Scalar {
             loader: self.clone(),
             value,
         }
     }
 
-    pub fn assign_const_ec_point(self: &Rc<Self>, ec_point: C) -> EcPoint<'a, 'b, C, LIMBS, BITS> {
-        let assigned = self
-            .ecc_chip
-            .borrow()
-            .assign_constant(&mut self.ctx_mut(), ec_point)
-            .unwrap();
-        self.ec_point(assigned)
+    pub fn ecc_chip(&self) -> &EccChip<'a, C::Scalar, FpChip<C>> {
+        &self.ecc_chip
     }
 
-    pub fn assign_ec_point(
-        self: &Rc<Self>,
-        ec_point: circuit::Value<C>,
-    ) -> EcPoint<'a, 'b, C, LIMBS, BITS> {
-        let assigned = self
-            .ecc_chip
-            .borrow()
-            .assign_point(&mut self.ctx_mut(), ec_point)
-            .unwrap();
-        self.ec_point(assigned)
+    pub fn field_chip(&self) -> &FpChip<C> {
+        &self.ecc_chip.field_chip
     }
 
-    pub fn assign_ec_point_from_limbs(
-        self: &Rc<Self>,
-        x_limbs: [AssignedValue<C::Scalar>; LIMBS],
-        y_limbs: [AssignedValue<C::Scalar>; LIMBS],
-    ) -> EcPoint<'a, 'b, C, LIMBS, BITS> {
-        let [x, y] = [&x_limbs, &y_limbs]
-            .map(|limbs| {
-                limbs.iter().enumerate().fold(
-                    circuit::Value::known([C::Scalar::zero(); LIMBS]),
-                    |acc, (idx, limb)| {
-                        acc.zip(limb.value()).map(|(mut acc, limb)| {
-                            acc[idx] = *limb;
-                            acc
-                        })
-                    },
-                )
-            })
-            .map(|limbs| {
-                self.ecc_chip
-                    .borrow()
-                    .integer_chip()
-                    .assign_integer(
-                        &mut self.ctx_mut(),
-                        limbs
-                            .map(|limbs| Integer::from_limbs(&limbs, self.rns.clone()))
-                            .into(),
-                        Range::Remainder,
-                    )
-                    .unwrap()
-            });
+    pub fn range(&self) -> &RangeConfig<C::Scalar> {
+        self.field_chip().range()
+    }
 
-        let ec_point = AssignedPoint::new(x, y);
-        self.ecc_chip()
-            .assert_is_on_curve(&mut self.ctx_mut(), &ec_point)
-            .unwrap();
-
-        for (src, dst) in x_limbs.iter().chain(y_limbs.iter()).zip(
-            ec_point
-                .get_x()
-                .limbs()
-                .iter()
-                .chain(ec_point.get_y().limbs().iter()),
-        ) {
-            self.ctx
-                .borrow_mut()
-                .constrain_equal(src.cell(), dst.as_ref().cell())
-                .unwrap();
-        }
-
-        self.ec_point(ec_point)
+    pub fn gate(&self) -> &FlexGateConfig<C::Scalar> {
+        &self.range().gate
     }
 
     pub fn ec_point(
         self: &Rc<Self>,
-        assigned: AssignedPoint<C::Base, C::Scalar, LIMBS, BITS>,
-    ) -> EcPoint<'a, 'b, C, LIMBS, BITS> {
-        let index = *self.num_ec_point.borrow();
-        *self.num_ec_point.borrow_mut() += 1;
+        assigned: EccPoint<C::Scalar, FpPoint<C>>,
+    ) -> EcPoint<'a, 'b, C> {
         EcPoint {
             loader: self.clone(),
-            index,
-            assigned,
+            value: Value::Assigned(assigned),
         }
     }
 
-    pub fn ec_point_nomalize(
-        self: &Rc<Self>,
-        assigned: &AssignedPoint<C::Base, C::Scalar, LIMBS, BITS>,
-    ) -> AssignedPoint<C::Base, C::Scalar, LIMBS, BITS> {
-        self.ecc_chip()
-            .normalize(&mut self.ctx_mut(), assigned)
-            .unwrap()
-    }
-
-    fn add(
-        self: &Rc<Self>,
-        lhs: &Scalar<'a, 'b, C, LIMBS, BITS>,
-        rhs: &Scalar<'a, 'b, C, LIMBS, BITS>,
-    ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+    fn add(self: &Rc<Self>, lhs: &Scalar<'a, 'b, C>, rhs: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
         let output = match (&lhs.value, &rhs.value) {
             (Value::Constant(lhs), Value::Constant(rhs)) => Value::Constant(*lhs + rhs),
             (Value::Assigned(assigned), Value::Constant(constant))
-            | (Value::Constant(constant), Value::Assigned(assigned)) => {
-                MainGateInstructions::add_constant(
-                    &self.main_gate,
-                    &mut self.ctx_mut(),
-                    assigned,
-                    *constant,
-                )
-                .map(Value::Assigned)
-                .unwrap()
-            }
-            (Value::Assigned(lhs), Value::Assigned(rhs)) => {
-                MainGateInstructions::add(&self.main_gate, &mut self.ctx_mut(), lhs, rhs)
-                    .map(Value::Assigned)
-                    .unwrap()
-            }
+            | (Value::Constant(constant), Value::Assigned(assigned)) => Value::Assigned(
+                self.gate()
+                    .add(self.ctx, &Existing(assigned), &Constant(*constant))
+                    .expect("add should not fail"),
+            ),
+            (Value::Assigned(lhs), Value::Assigned(rhs)) => Value::Assigned(
+                self.gate()
+                    .add(self.ctx, &Existing(lhs), &Existing(rhs))
+                    .expect("add should not fail"),
+            ),
         };
         self.scalar(output)
     }
 
-    fn sub(
-        self: &Rc<Self>,
-        lhs: &Scalar<'a, 'b, C, LIMBS, BITS>,
-        rhs: &Scalar<'a, 'b, C, LIMBS, BITS>,
-    ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+    fn sub(self: &Rc<Self>, lhs: &Scalar<'a, 'b, C>, rhs: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
         let output = match (&lhs.value, &rhs.value) {
             (Value::Constant(lhs), Value::Constant(rhs)) => Value::Constant(*lhs - rhs),
-            (Value::Constant(constant), Value::Assigned(assigned)) => {
-                MainGateInstructions::neg_with_constant(
-                    &self.main_gate,
-                    &mut self.ctx_mut(),
-                    assigned,
-                    *constant,
-                )
-                .map(Value::Assigned)
-                .unwrap()
-            }
-            (Value::Assigned(assigned), Value::Constant(constant)) => {
-                MainGateInstructions::add_constant(
-                    &self.main_gate,
-                    &mut self.ctx_mut(),
-                    assigned,
-                    constant.neg(),
-                )
-                .map(Value::Assigned)
-                .unwrap()
-            }
-            (Value::Assigned(lhs), Value::Assigned(rhs)) => {
-                MainGateInstructions::sub(&self.main_gate, &mut self.ctx_mut(), lhs, rhs)
-                    .map(Value::Assigned)
-                    .unwrap()
-            }
+            (Value::Constant(constant), Value::Assigned(assigned)) => Value::Assigned(
+                self.gate()
+                    .sub(self.ctx, &Constant(*constant), &Existing(assigned))
+                    .expect("sub should not fail"),
+            ),
+            (Value::Assigned(assigned), Value::Constant(constant)) => Value::Assigned(
+                self.gate()
+                    .sub(self.ctx, &Existing(assigned), &Constant(*constant))
+                    .expect("sub should not fail"),
+            ),
+            (Value::Assigned(lhs), Value::Assigned(rhs)) => Value::Assigned(
+                self.gate()
+                    .sub(self.ctx, &Existing(lhs), &Existing(rhs))
+                    .expect("sub should not fail"),
+            ),
         };
         self.scalar(output)
     }
 
-    fn mul(
-        self: &Rc<Self>,
-        lhs: &Scalar<'a, 'b, C, LIMBS, BITS>,
-        rhs: &Scalar<'a, 'b, C, LIMBS, BITS>,
-    ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+    fn mul(self: &Rc<Self>, lhs: &Scalar<'a, 'b, C>, rhs: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
         let output = match (&lhs.value, &rhs.value) {
             (Value::Constant(lhs), Value::Constant(rhs)) => Value::Constant(*lhs * rhs),
             (Value::Assigned(assigned), Value::Constant(constant))
-            | (Value::Constant(constant), Value::Assigned(assigned)) => {
-                MainGateInstructions::apply(
-                    &self.main_gate,
-                    &mut self.ctx_mut(),
-                    [
-                        Term::Assigned(assigned, *constant),
-                        Term::unassigned_to_sub(
-                            assigned.value().map(|assigned| *assigned * constant),
-                        ),
-                    ],
-                    C::Scalar::zero(),
-                    CombinationOptionCommon::OneLinerAdd.into(),
-                )
-                .map(|mut assigned| Value::Assigned(assigned.swap_remove(1)))
-                .unwrap()
-            }
-            (Value::Assigned(lhs), Value::Assigned(rhs)) => {
-                MainGateInstructions::mul(&self.main_gate, &mut self.ctx_mut(), lhs, rhs)
-                    .map(Value::Assigned)
-                    .unwrap()
-            }
+            | (Value::Constant(constant), Value::Assigned(assigned)) => Value::Assigned(
+                self.gate()
+                    .mul(self.ctx, &Existing(assigned), &Constant(*constant))
+                    .expect("mul should not fail"),
+            ),
+            (Value::Assigned(lhs), Value::Assigned(rhs)) => Value::Assigned(
+                self.gate()
+                    .mul(self.ctx, &Existing(lhs), &Existing(rhs))
+                    .expect("mul should not fail"),
+            ),
         };
         self.scalar(output)
     }
 
-    fn neg(
-        self: &Rc<Self>,
-        scalar: &Scalar<'a, 'b, C, LIMBS, BITS>,
-    ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+    fn neg(self: &Rc<Self>, scalar: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
         let output = match &scalar.value {
             Value::Constant(constant) => Value::Constant(constant.neg()),
-            Value::Assigned(assigned) => MainGateInstructions::neg_with_constant(
-                &self.main_gate,
-                &mut self.ctx_mut(),
-                assigned,
-                C::Scalar::zero(),
-            )
-            .map(Value::Assigned)
-            .unwrap(),
+            Value::Assigned(assigned) => Value::Assigned(
+                self.gate()
+                    .neg(self.ctx, &Existing(assigned))
+                    .expect("neg should not fail"),
+            ),
         };
         self.scalar(output)
     }
 
-    fn invert(
-        self: &Rc<Self>,
-        scalar: &Scalar<'a, 'b, C, LIMBS, BITS>,
-    ) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+    fn invert(self: &Rc<Self>, scalar: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
         let output = match &scalar.value {
-            Value::Constant(constant) => Value::Constant(Field::invert(constant).unwrap()),
-            Value::Assigned(assigned) => {
-                let (inv, non_invertable) =
-                    MainGateInstructions::invert(&self.main_gate, &mut self.ctx_mut(), assigned)
-                        .unwrap();
-                self.main_gate
-                    .assert_zero(&mut self.ctx_mut(), &non_invertable)
-                    .unwrap();
-                Value::Assigned(inv)
+            Value::Constant(constant) => Value::Constant(constant.invert().unwrap()),
+            Value::Assigned(assigned) => Value::Assigned(
+                self.gate()
+                    .div_unsafe(self.ctx, &Constant(C::Scalar::one()), &Existing(assigned))
+                    .expect("invert should not fail"),
+            ),
+        };
+        self.scalar(output)
+    }
+
+    fn div(self: &Rc<Self>, lhs: &Scalar<'a, 'b, C>, rhs: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
+        let output = match (&lhs.value, &rhs.value) {
+            (Value::Constant(lhs), Value::Constant(rhs)) => {
+                Value::Constant(*lhs * rhs.invert().unwrap())
+            }
+            (Value::Constant(constant), Value::Assigned(assigned)) => Value::Assigned(
+                self.gate()
+                    .div_unsafe(self.ctx, &Constant(*constant), &Existing(assigned))
+                    .expect("div should not fail"),
+            ),
+            (Value::Assigned(assigned), Value::Constant(constant)) => Value::Assigned(
+                self.gate()
+                    .div_unsafe(self.ctx, &Existing(assigned), &Constant(*constant))
+                    .expect("div should not fail"),
+            ),
+            (Value::Assigned(lhs), Value::Assigned(rhs)) => {
+                self.gate()
+                    .div_unsafe(self.ctx, &Existing(lhs), &Existing(rhs))
+                    .expect("div should not fail");
             }
         };
         self.scalar(output)
-    }
-}
-
-#[cfg(test)]
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize>
-    Halo2Loader<'a, 'b, C, LIMBS, BITS>
-{
-    fn start_row_metering(self: &Rc<Self>, identifier: &str) {
-        self.row_meterings
-            .borrow_mut()
-            .push((identifier.to_string(), *self.ctx.borrow().offset))
-    }
-
-    fn end_row_metering(self: &Rc<Self>) {
-        let mut row_meterings = self.row_meterings.borrow_mut();
-        let (_, row) = row_meterings.last_mut().unwrap();
-        *row = *self.ctx.borrow().offset - *row;
-    }
-
-    pub fn print_row_metering(self: &Rc<Self>) {
-        for (identifier, cost) in self.row_meterings.borrow().iter() {
-            println!("{}: {}", identifier, cost);
-        }
     }
 }
 
 #[derive(Clone)]
-pub struct Scalar<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> {
-    loader: Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>,
-    value: Value<C::Scalar, AssignedValue<C::Scalar>>,
+pub struct Scalar<'a, 'b, C: CurveAffine> {
+    loader: Rc<Halo2Loader<'a, 'b, C>>,
+    value: Value<C::Scalar, AssignedCell<C::Scalar, C::Scalar>>,
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Scalar<'a, 'b, C, LIMBS, BITS> {
-    pub fn assigned(&self) -> AssignedValue<C::Scalar> {
+impl<'a, 'b, C: CurveAffine> Scalar<'a, 'b, C> {
+    pub fn assigned(&self) -> AssignedCell<C::Scalar, C::Scalar> {
         match &self.value {
             Value::Constant(constant) => self.loader.assign_const_scalar(*constant).assigned(),
             Value::Assigned(assigned) => assigned.clone(),
@@ -369,19 +241,97 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Scalar<'a, '
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> LoadedScalar<C::Scalar>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
-    type Loader = Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>;
+impl<'a, 'b, C: CurveAffine> LoadedScalar<C::Scalar> for Scalar<'a, 'b, C> {
+    type Loader = Rc<Halo2Loader<'a, 'b, C>>;
 
     fn loader(&self) -> &Self::Loader {
         &self.loader
     }
+
+    fn sum_with_coeff_and_constant(values: &[(C::Scalar, Self)], constant: &C::Scalar) -> Self {
+        let loader = values.first().unwrap().1.loader();
+        let a = Vec::with_capacity(values.len() + 1);
+        let b = Vec::with_capacity(values.len() + 1);
+        if *constant != C::Scalar::zero() {
+            a.push(Constant(C::Scalar::one()));
+            b.push(Constant(*constant));
+        }
+        a.extend(values.iter().map(|(_, a)| match &a.value {
+            Value::Constant(constant) => Constant(*constant),
+            Value::Assigned(assigned) => Existing(assigned),
+        }));
+        b.extend(values.iter().map(|(c, _)| Constant(*c)));
+        let (_, _, sum, gate_index) = loader.gate().inner_product(loader.ctx, &a, &b)?;
+
+        loader.scalar(sum)
+    }
+
+    fn sum_products_with_coeff_and_constant(
+        values: &[(C::Scalar, Self, Self)],
+        constant: &C::Scalar,
+    ) -> Self {
+        let loader = values.first().unwrap().1.loader();
+        let prods = Vec::with_capacity(values.len());
+        for val in values {
+            let prod = val.1 * val.2;
+            prods.push((val.0, prod));
+        }
+        Self::sum_with_coeff_and_constant(&prods[..], constant)
+    }
+
+    fn pow_const(&self, mut exp: u64) -> Self {
+        fn get_naf(mut e: u64) -> Vec<i8> {
+            // https://en.wikipedia.org/wiki/Non-adjacent_form
+            // NAF for exp:
+            let mut naf: Vec<i8> = Vec::with_capacity(32);
+
+            // generate the NAF for exp
+            for _ in 0..64 {
+                if e & 1 == 1 {
+                    let z = 2i8 - (e % 4) as i8;
+                    e = e / 2;
+                    if z == -1 {
+                        e += 1;
+                    }
+                    naf.push(z);
+                } else {
+                    naf.push(0);
+                    e = e / 2;
+                }
+            }
+            if e != 0 {
+                assert_eq!(e, 1);
+                naf.push(1);
+            }
+            naf
+        }
+
+        assert!(exp > 0);
+        let naf = get_naf(exp);
+        let mut acc = self.clone();
+        let mut is_started = false;
+
+        for &z in naf.iter().rev() {
+            if is_started {
+                acc *= acc;
+            }
+            if z != 0 {
+                if is_started {
+                    acc = if z == 1 {
+                        acc * self
+                    } else {
+                        (&self.loader).div(&acc, self)
+                    };
+                } else {
+                    is_started = true;
+                }
+            }
+        }
+        Ok(acc)
+    }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Debug
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Debug for Scalar<'a, 'b, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Scalar")
             .field("value", &self.value)
@@ -389,27 +339,20 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Debug
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> FieldOps
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> FieldOps for Scalar<'a, 'b, C> {
     fn invert(&self) -> Option<Self> {
         Some((&self.loader).invert(self))
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Add for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
         (&self.loader).add(&self, &rhs)
     }
 }
-
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Sub for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -417,9 +360,7 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Mul
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Mul for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
@@ -427,9 +368,7 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Mul
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Neg
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Neg for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
@@ -437,9 +376,7 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Neg
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add<&'c Self>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> Add<&'c Self> for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn add(self, rhs: &'c Self) -> Self::Output {
@@ -447,9 +384,7 @@ impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add<&'c 
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub<&'c Self>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> Sub<&'c Self> for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn sub(self, rhs: &'c Self) -> Self::Output {
@@ -457,9 +392,7 @@ impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub<&'c 
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Mul<&'c Self>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> Mul<&'c Self> for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn mul(self, rhs: &'c Self) -> Self::Output {
@@ -467,81 +400,61 @@ impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Mul<&'c 
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> AddAssign
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> AddAssign for Scalar<'a, 'b, C> {
     fn add_assign(&mut self, rhs: Self) {
         *self = (&self.loader).add(self, &rhs)
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> SubAssign
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> SubAssign for Scalar<'a, 'b, C, LIMBS, BITS> {
     fn sub_assign(&mut self, rhs: Self) {
         *self = (&self.loader).sub(self, &rhs)
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> MulAssign
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> MulAssign for Scalar<'a, 'b, C, LIMBS, BITS> {
     fn mul_assign(&mut self, rhs: Self) {
         *self = (&self.loader).mul(self, &rhs)
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> AddAssign<&'c Self>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> AddAssign<&'c Self> for Scalar<'a, 'b, C, LIMBS, BITS> {
     fn add_assign(&mut self, rhs: &'c Self) {
         *self = (&self.loader).add(self, rhs)
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> SubAssign<&'c Self>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> SubAssign<&'c Self> for Scalar<'a, 'b, C, LIMBS, BITS> {
     fn sub_assign(&mut self, rhs: &'c Self) {
         *self = (&self.loader).sub(self, rhs)
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> MulAssign<&'c Self>
-    for Scalar<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> MulAssign<&'c Self> for Scalar<'a, 'b, C, LIMBS, BITS> {
     fn mul_assign(&mut self, rhs: &'c Self) {
         *self = (&self.loader).mul(self, rhs)
     }
 }
 
 #[derive(Clone)]
-pub struct EcPoint<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> {
-    loader: Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>,
-    index: usize,
-    assigned: AssignedPoint<C::Base, C::Scalar, LIMBS, BITS>,
+pub struct EcPoint<'a, 'b, C: CurveAffine> {
+    loader: Rc<Halo2Loader<'a, 'b, C>>,
+    pub value: Value<FixedEccPoint<C::Scalar, C>, EccPoint<C::Scalar, FpPoint<C>>>,
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize>
-    EcPoint<'a, 'b, C, LIMBS, BITS>
-{
-    pub fn assigned(&self) -> AssignedPoint<C::Base, C::Scalar, LIMBS, BITS> {
-        self.assigned.clone()
+impl<'a, 'b, C: CurveAffine> EcPoint<'a, 'b, C> {
+    pub fn assigned(&self) -> EccPoint<C::Scalar, FpPoint<C>> {
+        match &self.value {
+            Value::Constant(constant) => constant
+                .assign(self.loader.field_chip(), self.loader.ctx)
+                .unwrap(),
+            Value::Assigned(assigned) => assigned.clone(),
+        }
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> PartialEq
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.index == other.index
-    }
-}
-
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> LoadedEcPoint<C::CurveExt>
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
-    type Loader = Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>;
+impl<'a, 'b, C: CurveAffine> LoadedEcPoint<C::CurveExt> for EcPoint<'a, 'b, C> {
+    type Loader = Rc<Halo2Loader<'a, 'b, C>>;
 
     fn loader(&self) -> &Self::Loader {
         &self.loader
@@ -553,70 +466,83 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> LoadedEcPoin
         let pairs = pairs.into_iter().collect_vec();
         let loader = &pairs[0].0.loader;
 
-        let (non_scaled, scaled) = pairs.iter().fold(
-            (Vec::new(), Vec::new()),
-            |(mut non_scaled, mut scaled), (scalar, ec_point)| {
+        let (non_scaled, fixed, scaled) = pairs.iter().fold(
+            (Vec::new(), Vec::new(), Vec::new()),
+            |(mut non_scaled, mut fixed, mut scaled), (scalar, ec_point)| {
                 if matches!(scalar.value, Value::Constant(constant) if constant == C::Scalar::one())
                 {
                     non_scaled.push(ec_point.assigned());
                 } else {
-                    scaled.push((ec_point.assigned(), scalar.assigned()))
+                    match ec_point.value {
+                        Constant(constant_pt) => {
+                            fixed.push((constant_pt.clone(), scalar.assigned()));
+                        }
+                        Assigned(assigned_pt) => {
+                            scaled.push((assigned_pt.clone(), scalar.assigned()));
+                        }
+                    }
                 }
-                (non_scaled, scaled)
+                (non_scaled, fixed, scaled)
             },
         );
 
-        let output = iter::empty()
-            .chain(if scaled.is_empty() {
-                None
-            } else {
-                let aux_generator = <C as CurveAffine>::CurveExt::random(OsRng).to_affine();
-                loader
-                    .ecc_chip
-                    .borrow_mut()
-                    .assign_aux_generator(
-                        &mut loader.ctx.borrow_mut(),
-                        circuit::Value::known(aux_generator),
-                    )
-                    .unwrap();
-                loader
-                    .ecc_chip
-                    .borrow_mut()
-                    .assign_aux(&mut loader.ctx.borrow_mut(), WINDOW_SIZE, scaled.len())
-                    .unwrap();
-                Some(
-                    loader
-                        .ecc_chip
-                        .borrow()
-                        .mul_batch_1d_horizontal(&mut loader.ctx.borrow_mut(), scaled, WINDOW_SIZE)
-                        .unwrap(),
+        let mut sum = None;
+        if !scaled.is_empty() {
+            sum = loader
+                .ecc_chip
+                .multi_scalar_mult(
+                    ctx,
+                    scaled.iter().map(|pair| pair.0).collect(),
+                    scaled.iter().map(|pair| pair.1).collect(),
+                    <C::Scalar as PrimeField>::NUM_BITS as usize,
+                    4,
                 )
-            })
-            .chain(non_scaled)
-            .reduce(|acc, ec_point| {
-                (loader.ecc_chip().deref())
-                    .add(&mut loader.ctx.borrow_mut(), &acc, &ec_point)
+                .ok();
+        }
+        if !non_scaled.is_empty() || !fixed.is_empty() {
+            let rand_point = loader.ecc_chip.load_random_point(loader.ctx).unwrap();
+            let sum = if let Some(prev) = sum {
+                loader
+                    .ecc_chip
+                    .add_unequal(loader.ctx, &prev, &rand_point, true)
                     .unwrap()
-            })
-            .unwrap();
+            } else {
+                rand_point.clone()
+            };
+            for point in non_scaled.into_iter() {
+                sum = loader
+                    .ecc_chip
+                    .add_unequal(loader.ctx, &sum, &point, true)
+                    .unwrap();
+            }
+            for (fixed_point, scalar) in fixed.iter() {
+                let fixed_msm = loader
+                    .ecc_chip
+                    .fixed_base_scalar_mult(loader.ctx, fixed_point, scalar, C::Scalar::NUM_BITS, 4)
+                    .expect("fixed msms should not fail");
+                sum = loader
+                    .ecc_chip
+                    .add_unequal(loader.ctx, &sum, &fixed_msm, true)
+                    .unwrap();
+            }
+            sum = loader
+                .ecc_chip
+                .sub_unequal(loader.ctx, &sum, &rand_point, true)
+                .unwrap();
+        }
         loader.ec_point(output)
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Debug
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Debug for EcPoint<'a, 'b, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EcPoint")
-            .field("index", &self.index)
             .field("assigned", &self.assigned)
             .finish()
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Add for EcPoint<'a, 'b, C> {
     type Output = Self;
 
     fn add(self, _: Self) -> Self::Output {
@@ -624,9 +550,7 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Sub for EcPoint<'a, 'b, C> {
     type Output = Self;
 
     fn sub(self, _: Self) -> Self::Output {
@@ -634,9 +558,7 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Neg
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> Neg for EcPoint<'a, 'b, C> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
@@ -644,9 +566,7 @@ impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Neg
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add<&'c Self>
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> Add<&'c Self> for EcPoint<'a, 'b, C> {
     type Output = Self;
 
     fn add(self, rhs: &'c Self) -> Self::Output {
@@ -654,9 +574,7 @@ impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Add<&'c 
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub<&'c Self>
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> Sub<&'c Self> for EcPoint<'a, 'b, C> {
     type Output = Self;
 
     fn sub(self, rhs: &'c Self) -> Self::Output {
@@ -664,68 +582,52 @@ impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> Sub<&'c 
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> AddAssign
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> AddAssign for EcPoint<'a, 'b, C> {
     fn add_assign(&mut self, rhs: Self) {
         *self = self.clone() + rhs
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> SubAssign
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, C: CurveAffine> SubAssign for EcPoint<'a, 'b, C> {
     fn sub_assign(&mut self, rhs: Self) {
         *self = self.clone() - rhs
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> AddAssign<&'c Self>
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> AddAssign<&'c Self> for EcPoint<'a, 'b, C> {
     fn add_assign(&mut self, rhs: &'c Self) {
         *self = self.clone() + rhs
     }
 }
 
-impl<'a, 'b, 'c, C: CurveAffine, const LIMBS: usize, const BITS: usize> SubAssign<&'c Self>
-    for EcPoint<'a, 'b, C, LIMBS, BITS>
-{
+impl<'a, 'b, 'c, C: CurveAffine> SubAssign<&'c Self> for EcPoint<'a, 'b, C> {
     fn sub_assign(&mut self, rhs: &'c Self) {
         *self = self.clone() - rhs
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> ScalarLoader<C::Scalar>
-    for Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>
-{
-    type LoadedScalar = Scalar<'a, 'b, C, LIMBS, BITS>;
+impl<'a, 'b, C: CurveAffine> ScalarLoader<C::Scalar> for Rc<Halo2Loader<'a, 'b, C>> {
+    type LoadedScalar = Scalar<'a, 'b, C>;
 
-    fn load_const(&self, value: &C::Scalar) -> Scalar<'a, 'b, C, LIMBS, BITS> {
+    fn load_const(&self, value: &C::Scalar) -> Scalar<'a, 'b, C> {
         self.scalar(Value::Constant(*value))
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> EcPointLoader<C::CurveExt>
-    for Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>
-{
-    type LoadedEcPoint = EcPoint<'a, 'b, C, LIMBS, BITS>;
+impl<'a, 'b, C: CurveAffine> EcPointLoader<C::CurveExt> for Rc<Halo2Loader<'a, 'b, C>> {
+    type LoadedEcPoint = EcPoint<'a, 'b, C>;
 
-    fn ec_point_load_const(&self, ec_point: &C::CurveExt) -> EcPoint<'a, 'b, C, LIMBS, BITS> {
-        self.assign_const_ec_point(ec_point.to_affine())
+    fn ec_point_load_const(&self, ec_point: &C::CurveExt) -> EcPoint<'a, 'b, C> {
+        let constant_point = FixedEccPoint::from_g1(
+            &ec_point.to_affine(),
+            self.ecc_chip.field_chip.num_limbs,
+            self.ecc_chip.field_chip.limb_bits,
+        );
+        EcPoint {
+            loader: self.clone(),
+            value: Value::Constant(constant_point),
+        }
     }
 }
 
-impl<'a, 'b, C: CurveAffine, const LIMBS: usize, const BITS: usize> Loader<C::CurveExt>
-    for Rc<Halo2Loader<'a, 'b, C, LIMBS, BITS>>
-{
-    #[cfg(test)]
-    fn start_cost_metering(&self, identifier: &str) {
-        self.start_row_metering(identifier)
-    }
-
-    #[cfg(test)]
-    fn end_cost_metering(&self) {
-        self.end_row_metering()
-    }
-}
+impl<'a, 'b, C: CurveAffine> Loader<C::CurveExt> for Rc<Halo2Loader<'a, 'b, C>> {}
