@@ -158,13 +158,11 @@ where
     }
 }
 
-pub struct SameCurveAccumulation<C: Curve, L: Loader<C>, const LIMBS: usize, const BITS: usize> {
+pub struct SameCurveAccumulation<C: Curve, L: Loader<C>> {
     pub accumulator: Option<Accumulator<C, L>>,
 }
 
-impl<C: Curve, L: Loader<C>, const LIMBS: usize, const BITS: usize> Default
-    for SameCurveAccumulation<C, L, LIMBS, BITS>
-{
+impl<C: Curve, L: Loader<C>> Default for SameCurveAccumulation<C, L> {
     fn default() -> Self {
         Self { accumulator: None }
     }

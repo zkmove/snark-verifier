@@ -37,6 +37,14 @@ impl<F: PrimeField> LoadedScalar<F> for F {
     fn loader(&self) -> &NativeLoader {
         &LOADER
     }
+
+    fn mul_add(a: &Self, b: &Self, c: &Self) -> Self {
+        *a * b + c
+    }
+
+    fn mul_add_constant(a: &Self, b: &Self, c: &F) -> Self {
+        *a * b + c
+    }
 }
 
 #[derive(Clone, Debug)]

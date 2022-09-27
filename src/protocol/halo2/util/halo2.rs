@@ -3,12 +3,13 @@ use crate::{
     util::{self, Curve, PrimeField},
     Error,
 };
-use halo2_curves::CurveAffine;
-use halo2_proofs::transcript::{
-    EncodedChallenge, Transcript, TranscriptRead, TranscriptReadBuffer, TranscriptWrite,
-    TranscriptWriterBuffer,
+use halo2_proofs::{
+    halo2curves::CurveAffine,
+    transcript::{
+        EncodedChallenge, Transcript, TranscriptRead, TranscriptReadBuffer, TranscriptWrite,
+        TranscriptWriterBuffer,
+    },
 };
-use halo2_wrong_transcript::NativeRepresentation;
 use poseidon::Poseidon;
 use std::io::{self, Read, Write};
 
@@ -26,29 +27,9 @@ impl<C: CurveAffine> EncodedChallenge<C> for ChallengeScalar<C> {
     }
 }
 
-impl<
-        C: CurveAffine,
-        S,
-        const LIMBS: usize,
-        const BITS: usize,
-        const T: usize,
-        const RATE: usize,
-        const R_F: usize,
-        const R_P: usize,
-    > Transcript<C, ChallengeScalar<C>>
-    for PoseidonTranscript<
-        C,
-        NativeLoader,
-        S,
-        Poseidon<C::Scalar, T, RATE>,
-        NativeRepresentation,
-        LIMBS,
-        BITS,
-        T,
-        RATE,
-        R_F,
-        R_P,
-    >
+impl<C: CurveAffine, S, const T: usize, const RATE: usize, const R_F: usize, const R_P: usize>
+    Transcript<C, ChallengeScalar<C>>
+    for PoseidonTranscript<C, NativeLoader, S, Poseidon<C::Scalar, T, RATE>, T, RATE, R_F, R_P>
 {
     fn squeeze_challenge(&mut self) -> ChallengeScalar<C> {
         ChallengeScalar::new(&util::Transcript::squeeze_challenge(self))
@@ -74,26 +55,12 @@ impl<
 impl<
         C: CurveAffine,
         R: Read,
-        const LIMBS: usize,
-        const BITS: usize,
         const T: usize,
         const RATE: usize,
         const R_F: usize,
         const R_P: usize,
     > TranscriptRead<C, ChallengeScalar<C>>
-    for PoseidonTranscript<
-        C,
-        NativeLoader,
-        R,
-        Poseidon<C::Scalar, T, RATE>,
-        NativeRepresentation,
-        LIMBS,
-        BITS,
-        T,
-        RATE,
-        R_F,
-        R_P,
-    >
+    for PoseidonTranscript<C, NativeLoader, R, Poseidon<C::Scalar, T, RATE>, T, RATE, R_F, R_P>
 {
     fn read_point(&mut self) -> io::Result<C> {
         match util::TranscriptRead::read_ec_point(self) {
@@ -115,26 +82,12 @@ impl<
 impl<
         C: CurveAffine,
         R: Read,
-        const LIMBS: usize,
-        const BITS: usize,
         const T: usize,
         const RATE: usize,
         const R_F: usize,
         const R_P: usize,
     > TranscriptReadBuffer<R, C, ChallengeScalar<C>>
-    for PoseidonTranscript<
-        C,
-        NativeLoader,
-        R,
-        Poseidon<C::Scalar, T, RATE>,
-        NativeRepresentation,
-        LIMBS,
-        BITS,
-        T,
-        RATE,
-        R_F,
-        R_P,
-    >
+    for PoseidonTranscript<C, NativeLoader, R, Poseidon<C::Scalar, T, RATE>, T, RATE, R_F, R_P>
 {
     fn init(reader: R) -> Self {
         Self::new(reader)
@@ -144,26 +97,12 @@ impl<
 impl<
         C: CurveAffine,
         W: Write,
-        const LIMBS: usize,
-        const BITS: usize,
         const T: usize,
         const RATE: usize,
         const R_F: usize,
         const R_P: usize,
     > TranscriptWrite<C, ChallengeScalar<C>>
-    for PoseidonTranscript<
-        C,
-        NativeLoader,
-        W,
-        Poseidon<C::Scalar, T, RATE>,
-        NativeRepresentation,
-        LIMBS,
-        BITS,
-        T,
-        RATE,
-        R_F,
-        R_P,
-    >
+    for PoseidonTranscript<C, NativeLoader, W, Poseidon<C::Scalar, T, RATE>, T, RATE, R_F, R_P>
 {
     fn write_point(&mut self, ec_point: C) -> io::Result<()> {
         Transcript::<C, ChallengeScalar<C>>::common_point(self, ec_point)?;
@@ -181,26 +120,12 @@ impl<
 impl<
         C: CurveAffine,
         W: Write,
-        const LIMBS: usize,
-        const BITS: usize,
         const T: usize,
         const RATE: usize,
         const R_F: usize,
         const R_P: usize,
     > TranscriptWriterBuffer<W, C, ChallengeScalar<C>>
-    for PoseidonTranscript<
-        C,
-        NativeLoader,
-        W,
-        Poseidon<C::Scalar, T, RATE>,
-        NativeRepresentation,
-        LIMBS,
-        BITS,
-        T,
-        RATE,
-        R_F,
-        R_P,
-    >
+    for PoseidonTranscript<C, NativeLoader, W, Poseidon<C::Scalar, T, RATE>, T, RATE, R_F, R_P>
 {
     fn init(writer: W) -> Self {
         Self::new(writer)

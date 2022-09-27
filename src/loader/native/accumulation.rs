@@ -1,26 +1,25 @@
 use crate::{
     loader::native::NativeLoader,
-    protocol::Protocol,
+    protocol::{
+        halo2::{BITS, LIMBS},
+        Protocol,
+    },
     scheme::kzg::{AccumulationStrategy, Accumulator, SameCurveAccumulation, MSM},
     util::{fe_from_limbs, Curve, Group, Itertools, PrimeCurveAffine, Transcript},
     Error,
 };
-use halo2_curves::{
+use halo2_proofs::halo2curves::{
     pairing::{MillerLoopResult, MultiMillerLoop},
     CurveAffine, CurveExt,
 };
 
-impl<C: Curve, const LIMBS: usize, const BITS: usize>
-    SameCurveAccumulation<C, NativeLoader, LIMBS, BITS>
-{
+impl<C: Curve> SameCurveAccumulation<C, NativeLoader> {
     pub fn finalize(self, g1: C) -> (C, C) {
         self.accumulator.unwrap().evaluate(g1)
     }
 }
 
-impl<C: Curve, const LIMBS: usize, const BITS: usize>
-    SameCurveAccumulation<C, NativeLoader, LIMBS, BITS>
-{
+impl<C: Curve> SameCurveAccumulation<C, NativeLoader> {
     pub fn decide<M: MultiMillerLoop<G1 = C>>(
         self,
         g1: M::G1Affine,
@@ -33,15 +32,11 @@ impl<C: Curve, const LIMBS: usize, const BITS: usize>
         let minus_s_g2 = M::G2Prepared::from(-s_g2);
 
         let terms = [(&lhs.into(), &g2), (&rhs.into(), &minus_s_g2)];
-        M::multi_miller_loop(&terms)
-            .final_exponentiation()
-            .is_identity()
-            .into()
+        M::multi_miller_loop(&terms).final_exponentiation().is_identity().into()
     }
 }
 
-impl<C, T, P, const LIMBS: usize, const BITS: usize> AccumulationStrategy<C, NativeLoader, T, P>
-    for SameCurveAccumulation<C, NativeLoader, LIMBS, BITS>
+impl<C, T, P> AccumulationStrategy<C, NativeLoader, T, P> for SameCurveAccumulation<C, NativeLoader>
 where
     C: CurveExt,
     T: Transcript<C, NativeLoader>,
@@ -66,31 +61,21 @@ where
                     .chunks(4)
                     .into_iter()
                     .map(|indices| {
-                        fe_from_limbs::<_, _, LIMBS, BITS>(
-                            indices
-                                .iter()
-                                .map(|index| statements[index.0][index.1])
-                                .collect_vec()
-                                .try_into()
-                                .unwrap(),
+                        fe_from_limbs(
+                            indices.iter().map(|index| statements[index.0][index.1]).collect_vec(),
+                            BITS,
                         )
                     })
                     .collect_vec()
                     .try_into()
                     .unwrap();
-                let lhs = <C::AffineExt as CurveAffine>::from_xy(lhs_x, lhs_y)
-                    .unwrap()
-                    .to_curve();
-                let rhs = <C::AffineExt as CurveAffine>::from_xy(rhs_x, rhs_y)
-                    .unwrap()
-                    .to_curve();
+                let lhs = <C::AffineExt as CurveAffine>::from_xy(lhs_x, lhs_y).unwrap().to_curve();
+                let rhs = <C::AffineExt as CurveAffine>::from_xy(rhs_x, rhs_y).unwrap().to_curve();
                 Accumulator::new(MSM::base(lhs), MSM::base(rhs))
             })
             .collect_vec();
 
-        Some(Accumulator::random_linear_combine(
-            challenges.into_iter().zip(accumulators),
-        ))
+        Some(Accumulator::random_linear_combine(challenges.into_iter().zip(accumulators)))
     }
 
     fn process(

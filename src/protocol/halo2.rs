@@ -12,6 +12,9 @@ use std::{io, iter};
 
 mod util;
 
+pub const LIMBS: usize = 3;
+pub const BITS: usize = 88;
+
 #[cfg(test)]
 mod test;
 

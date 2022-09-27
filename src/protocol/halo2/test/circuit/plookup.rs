@@ -586,8 +586,8 @@ impl<F: FieldExt, const W: usize, const ZK: bool> PlookupConfig<F, W, ZK> {
 mod test {
     use super::{PlookupConfig, ShuffleConfig};
     use crate::util::Itertools;
-    use halo2_curves::{bn256::Fr, FieldExt};
     use halo2_proofs::{
+        halo2curves::{bn256::Fr, FieldExt},
         circuit::{floor_planner::V1, Layouter, Value},
         dev::{metadata::Constraint, FailureLocation, MockProver, VerifyFailure},
         plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed},

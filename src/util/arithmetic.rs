@@ -130,13 +130,7 @@ impl<F: PrimeField> Domain<F> {
             .unwrap();
         let gen_inv = gen.invert().unwrap();
 
-        Self {
-            k,
-            n,
-            n_inv,
-            gen,
-            gen_inv,
-        }
+        Self { k, n, n_inv, gen, gen_inv }
     }
 
     pub fn rotate_scalar(&self, scalar: F, rotation: Rotation) -> F {
@@ -157,19 +151,11 @@ pub struct Fraction<F> {
 
 impl<F> Fraction<F> {
     pub fn new(numer: F, denom: F) -> Self {
-        Self {
-            numer: Some(numer),
-            denom,
-            inv: false,
-        }
+        Self { numer: Some(numer), denom, inv: false }
     }
 
     pub fn one_over(denom: F) -> Self {
-        Self {
-            numer: None,
-            denom,
-            inv: false,
-        }
+        Self { numer: None, denom, inv: false }
     }
 
     pub fn denom(&self) -> Option<&F> {
@@ -192,15 +178,8 @@ impl<F> Fraction<F> {
 
 impl<F: FieldOps + Clone> Fraction<F> {
     pub fn evaluate(&self) -> F {
-        let denom = if self.inv {
-            self.denom.clone()
-        } else {
-            self.denom.invert().unwrap()
-        };
-        self.numer
-            .clone()
-            .map(|numer| numer * &denom)
-            .unwrap_or(denom)
+        let denom = if self.inv { self.denom.clone() } else { self.denom.invert().unwrap() };
+        self.numer.clone().map(|numer| numer * &denom).unwrap_or(denom)
     }
 }
 
@@ -212,14 +191,12 @@ pub fn big_to_fe<F: PrimeField>(big: BigUint) -> F {
     F::from_repr(repr).unwrap()
 }
 
-pub fn fe_from_limbs<F1: PrimeField, F2: PrimeField, const LIMBS: usize, const BITS: usize>(
-    limbs: [F1; LIMBS],
-) -> F2 {
+pub fn fe_from_limbs<F1: PrimeField, F2: PrimeField>(limbs: Vec<F1>, limb_bits: usize) -> F2 {
     big_to_fe(
         limbs
             .iter()
             .map(|limb| BigUint::from_bytes_le(limb.to_repr().as_ref()))
-            .zip((0usize..).step_by(BITS))
+            .zip((0usize..).step_by(limb_bits))
             .map(|(limb, shift)| limb << shift)
             .reduce(|acc, shifted| acc + shifted)
             .unwrap(),

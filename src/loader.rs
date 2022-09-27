@@ -15,12 +15,7 @@ pub trait LoadedEcPoint<C: Curve>: Clone + Debug + GroupOps + PartialEq {
     fn loader(&self) -> &Self::Loader;
 
     fn multi_scalar_multiplication(
-        pairs: impl IntoIterator<
-            Item = (
-                <Self::Loader as ScalarLoader<C::Scalar>>::LoadedScalar,
-                Self,
-            ),
-        >,
+        pairs: impl IntoIterator<Item = (<Self::Loader as ScalarLoader<C::Scalar>>::LoadedScalar, Self)>,
     ) -> Self;
 }
 
@@ -29,21 +24,17 @@ pub trait LoadedScalar<F: PrimeField>: Clone + Debug + FieldOps {
 
     fn loader(&self) -> &Self::Loader;
 
+    fn mul_add_constant(a: &Self, b: &Self, c: &F) -> Self;
+
+    fn mul_add(a: &Self, b: &Self, c: &Self) -> Self;
+
     fn sum_with_coeff_and_constant(values: &[(F, Self)], constant: &F) -> Self {
         assert!(!values.is_empty());
 
         let loader = values.first().unwrap().1.loader();
         iter::empty()
-            .chain(if *constant == F::zero() {
-                None
-            } else {
-                Some(loader.load_const(constant))
-            })
-            .chain(
-                values
-                    .iter()
-                    .map(|(coeff, value)| loader.load_const(coeff) * value),
-            )
+            .chain(if *constant == F::zero() { None } else { Some(loader.load_const(constant)) })
+            .chain(values.iter().map(|(coeff, value)| loader.load_const(coeff) * value))
             .reduce(|acc, term| acc + term)
             .unwrap()
     }
@@ -53,16 +44,8 @@ pub trait LoadedScalar<F: PrimeField>: Clone + Debug + FieldOps {
 
         let loader = values.first().unwrap().1.loader();
         iter::empty()
-            .chain(if *constant == F::zero() {
-                None
-            } else {
-                Some(loader.load_const(constant))
-            })
-            .chain(
-                values
-                    .iter()
-                    .map(|(coeff, lhs, rhs)| loader.load_const(coeff) * lhs * rhs),
-            )
+            .chain(if *constant == F::zero() { None } else { Some(loader.load_const(constant)) })
+            .chain(values.iter().map(|(coeff, lhs, rhs)| loader.load_const(coeff) * lhs * rhs))
             .reduce(|acc, term| acc + term)
             .unwrap()
     }
@@ -73,10 +56,7 @@ pub trait LoadedScalar<F: PrimeField>: Clone + Debug + FieldOps {
 
     fn sum_with_const(values: &[Self], constant: &F) -> Self {
         Self::sum_with_coeff_and_constant(
-            &values
-                .iter()
-                .map(|value| (F::one(), value.clone()))
-                .collect_vec(),
+            &values.iter().map(|value| (F::one(), value.clone())).collect_vec(),
             constant,
         )
     }

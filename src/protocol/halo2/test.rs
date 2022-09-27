@@ -3,10 +3,11 @@ use crate::{
     scheme::kzg::{Cost, CostEstimation, PlonkAccumulationScheme},
     util::{CommonPolynomial, Expression, Query},
 };
-use halo2_curves::bn256::{Bn256, Fr, G1};
+use ark_std::{end_timer, start_timer};
 use halo2_proofs::{
     arithmetic::FieldExt,
     dev::MockProver,
+    halo2curves::bn256::{Bn256, Fr, G1},
     plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey},
     poly::{
         commitment::{CommitmentScheme, Params, ParamsProver, Prover, Verifier},
@@ -24,12 +25,7 @@ use std::assert_matches::assert_matches;
 mod circuit;
 mod kzg;
 
-pub use circuit::{
-    maingate::{
-        MainGateWithPlookup, MainGateWithPlookupConfig, MainGateWithRange, MainGateWithRangeConfig,
-    },
-    standard::StandardPlonk,
-};
+pub use circuit::standard::StandardPlonk;
 
 pub fn create_proof_checked<'a, S, C, P, V, VS, TW, TR, EC, R, const ZK: bool>(
     params: &'a S::ParamsProver,
@@ -50,6 +46,7 @@ where
     EC: EncodedChallenge<S::Curve>,
     R: RngCore,
 {
+    let mock_time = start_timer!(|| "mock prover");
     for (circuit, instances) in circuits.iter().zip(instances.iter()) {
         MockProver::run::<_, ZK>(
             params.k(),
@@ -59,7 +56,9 @@ where
         .unwrap()
         .assert_satisfied();
     }
+    end_timer!(mock_time);
 
+    let proof_time = start_timer!(|| "create proof");
     let proof = {
         let mut transcript = TW::init(Vec::new());
         create_proof::<S, P, _, _, _, _, ZK>(
@@ -73,7 +72,9 @@ where
         .unwrap();
         transcript.finalize()
     };
+    end_timer!(proof_time);
 
+    let verify_time = start_timer!(|| "verify proof");
     let accept = {
         let params = params.verifier_params();
         let strategy = VS::new(params);
@@ -83,6 +84,7 @@ where
             .finalize()
     };
     assert!(accept);
+    end_timer!(verify_time);
 
     proof
 }
@@ -166,11 +168,6 @@ fn test_compile_standard_plonk() {
 
     assert_matches!(
         PlonkAccumulationScheme::estimate_cost(&protocol),
-        Cost {
-            num_commitment: 9,
-            num_evaluation: 13,
-            num_msm: 20,
-            ..
-        }
+        Cost { num_commitment: 9, num_evaluation: 13, num_msm: 20, .. }
     );
 }

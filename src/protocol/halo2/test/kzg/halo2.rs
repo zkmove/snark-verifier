@@ -1,25 +1,29 @@
 use crate::{
     collect_slice, halo2_kzg_config, halo2_kzg_create_snark, halo2_kzg_native_accumulate,
     halo2_kzg_native_verify, halo2_kzg_prepare,
-    loader::{halo2, native::NativeLoader},
+    loader::{halo2::Halo2Loader, native::NativeLoader},
     protocol::{
         halo2::{
             test::{
                 kzg::{BITS, LIMBS},
-                MainGateWithRange, MainGateWithRangeConfig, StandardPlonk,
+                StandardPlonk,
             },
             util::halo2::ChallengeScalar,
         },
         Protocol, Snark,
     },
-    scheme::kzg::{self, AccumulationScheme, ShplonkAccumulationScheme},
+    scheme::kzg::{AccumulationScheme, ShplonkAccumulationScheme},
     util::{fe_to_limbs, Curve, Group, Itertools, PrimeCurveAffine},
 };
-use halo2_curves::bn256::{Fr, G1Affine, G1};
+use halo2_ecc::{
+    fields::fp::{FpConfig, FpStrategy},
+    gates::{Context, ContextParams},
+};
 use halo2_proofs::{
-    circuit::{floor_planner::V1, Layouter, Value},
+    circuit::{Layouter, SimpleFloorPlanner, Value},
+    halo2curves::bn256::{Fq, Fr, G1Affine, G1},
     plonk,
-    plonk::Circuit,
+    plonk::{Circuit, Column, Instance},
     poly::{
         commitment::ParamsProver,
         kzg::{
@@ -29,10 +33,9 @@ use halo2_proofs::{
     },
     transcript::{Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer},
 };
-use halo2_wrong_ecc::{self, maingate::RegionCtx};
-use halo2_wrong_transcript::NativeRepresentation;
 use paste::paste;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
 const T: usize = 5;
@@ -40,11 +43,9 @@ const RATE: usize = 4;
 const R_F: usize = 8;
 const R_P: usize = 57;
 
-type BaseFieldEccChip<C> = halo2_wrong_ecc::BaseFieldEccChip<C, LIMBS, BITS>;
-type Halo2Loader<'a, 'b, C> = halo2::Halo2Loader<'a, 'b, C, LIMBS, BITS>;
 type PoseidonTranscript<C, L, S, B> =
-    halo2::PoseidonTranscript<C, L, S, B, NativeRepresentation, LIMBS, BITS, T, RATE, R_F, R_P>;
-type SameCurveAccumulation<C, L> = kzg::SameCurveAccumulation<C, L, LIMBS, BITS>;
+    crate::loader::halo2::PoseidonTranscript<C, L, S, B, T, RATE, R_F, R_P>;
+type SameCurveAccumulation<C, L> = crate::scheme::kzg::SameCurveAccumulation<C, L>;
 
 pub struct SnarkWitness<C: Curve> {
     protocol: Protocol<C>,
@@ -93,10 +94,7 @@ pub fn accumulate<'a, 'b>(
         .statements
         .iter()
         .map(|statements| {
-            statements
-                .iter()
-                .map(|statement| loader.assign_scalar(*statement))
-                .collect_vec()
+            statements.iter().map(|statement| loader.assign_scalar(*statement)).collect_vec()
         })
         .collect_vec();
     ShplonkAccumulationScheme::accumulate(
@@ -108,6 +106,25 @@ pub fn accumulate<'a, 'b>(
     )
     .map_err(|_| plonk::Error::Synthesis)?;
     Ok(())
+}
+
+// for tuning the circuit
+#[derive(Serialize, Deserialize)]
+pub struct Halo2VerifierCircuitConfigParams {
+    pub strategy: FpStrategy,
+    pub degree: u32,
+    pub num_advice: usize,
+    pub num_lookup_advice: usize,
+    pub num_fixed: usize,
+    pub lookup_bits: usize,
+    pub limb_bits: usize,
+    pub num_limbs: usize,
+}
+
+#[derive(Clone)]
+pub struct Halo2VerifierCircuitConfig {
+    pub base_field_config: FpConfig<Fr, Fq>,
+    pub instance: Column<Instance>,
 }
 
 pub struct Accumulation {
@@ -148,7 +165,7 @@ impl Accumulation {
             let (params, pk, protocol, circuits) = halo2_kzg_prepare!(
                 K,
                 halo2_kzg_config!(zk, 1),
-                MainGateWithRange::<_>::rand(ChaCha20Rng::from_seed(Default::default()))
+                StandardPlonk::<_>::rand(ChaCha20Rng::from_seed(Default::default()))
             );
             halo2_kzg_create_snark!(
                 &params,
@@ -191,11 +208,7 @@ impl Accumulation {
         .map(fe_to_limbs::<_, _, LIMBS, BITS>)
         .concat();
 
-        Self {
-            g1,
-            snarks: vec![snark1.into(), snark2.into()],
-            instances,
-        }
+        Self { g1, snarks: vec![snark1.into(), snark2.into()], instances }
     }
 
     pub fn two_snark_with_accumulator(zk: bool) -> Self {
@@ -239,11 +252,7 @@ impl Accumulation {
         .map(fe_to_limbs::<_, _, LIMBS, BITS>)
         .concat();
 
-        Self {
-            g1,
-            snarks: vec![snark.into()],
-            instances,
-        }
+        Self { g1, snarks: vec![snark.into()], instances }
     }
 
     pub fn instances(&self) -> Vec<Vec<Fr>> {
@@ -252,27 +261,47 @@ impl Accumulation {
 }
 
 impl Circuit<Fr> for Accumulation {
-    type Config = MainGateWithRangeConfig;
-    type FloorPlanner = V1;
+    type Config = Halo2VerifierCircuitConfig;
+    type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
         Self {
             g1: self.g1,
-            snarks: self
-                .snarks
-                .iter()
-                .map(SnarkWitness::without_witnesses)
-                .collect(),
+            snarks: self.snarks.iter().map(SnarkWitness::without_witnesses).collect(),
             instances: Vec::new(),
         }
     }
 
     fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
-        MainGateWithRangeConfig::configure::<Fr>(
+        let mut folder = std::path::PathBuf::new();
+        folder.push("src/configs");
+        folder.push("verify_circuit.config");
+        let params_str = std::fs::read_to_string(folder.as_path())
+            .expect(format!("{} should exist", folder.to_str().unwrap()).as_str());
+        let params: Halo2VerifierCircuitConfigParams =
+            serde_json::from_str(params_str.as_str()).unwrap();
+
+        assert!(
+            params.limb_bits == BITS && params.num_limbs == LIMBS,
+            "For now we fix limb_bits = {}, otherwise change code",
+            BITS
+        );
+        let base_field_config = FpConfig::configure(
             meta,
-            vec![BITS / LIMBS],
-            BaseFieldEccChip::<G1Affine>::rns().overflow_lengths(),
-        )
+            params.strategy,
+            params.num_advice,
+            params.num_lookup_advice,
+            params.num_fixed,
+            params.lookup_bits,
+            params.limb_bits,
+            params.num_limbs,
+            halo2_ecc::utils::modulus::<Fq>(),
+        );
+
+        let instance = meta.instance_column();
+        meta.enable_equality(instance);
+
+        Self::Config { base_field_config, instance }
     }
 
     fn synthesize(
@@ -280,33 +309,64 @@ impl Circuit<Fr> for Accumulation {
         config: Self::Config,
         mut layouter: impl Layouter<Fr>,
     ) -> Result<(), plonk::Error> {
-        config.load_table(&mut layouter)?;
+        let mut layouter = layouter.namespace(|| "aggregation");
+        config.base_field_config.load_lookup_table(&mut layouter)?;
 
-        let (lhs, rhs) = layouter.assign_region(
+        // Need to trick layouter to skip first pass in get shape mode
+        let using_simple_floor_planner = true;
+        let mut first_pass = true;
+        let mut final_pair = None;
+        layouter.assign_region(
             || "",
-            |mut region| {
-                let mut offset = 0;
-                let ctx = RegionCtx::new(&mut region, &mut offset);
-
-                let loader = Halo2Loader::<G1Affine>::new(config.ecc_config(), ctx);
-                let mut stretagy = SameCurveAccumulation::default();
-                for snark in self.snarks.iter() {
-                    accumulate(&loader, &mut stretagy, snark)?;
+            |region| {
+                if using_simple_floor_planner && first_pass {
+                    first_pass = false;
+                    return Ok(());
                 }
-                let (lhs, rhs) = stretagy.finalize(self.g1);
+                let ctx = Context::new(
+                    region,
+                    ContextParams {
+                        num_advice: config.base_field_config.range.gate.num_advice,
+                        using_simple_floor_planner,
+                        first_pass,
+                    },
+                );
 
-                loader.print_row_metering();
-                println!("Total: {}", offset);
+                let loader = Halo2Loader::<G1Affine>::new(&config.base_field_config, ctx);
+                let mut strategy = SameCurveAccumulation::default();
+                for snark in self.snarks.iter() {
+                    accumulate(&loader, &mut strategy, snark)?;
+                }
+                let (lhs, rhs) = strategy.finalize(self.g1);
 
-                Ok((lhs, rhs))
+                // REQUIRED STEP
+                loader.finalize();
+                final_pair = Some((lhs, rhs));
+
+                Ok(())
             },
         )?;
-
-        let ecc_chip = BaseFieldEccChip::<G1Affine>::new(config.ecc_config());
-        ecc_chip.expose_public(layouter.namespace(|| ""), lhs, 0)?;
-        ecc_chip.expose_public(layouter.namespace(|| ""), rhs, 2 * LIMBS)?;
-
-        Ok(())
+        let (lhs, rhs) = final_pair.unwrap();
+        Ok({
+            // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
+            let mut layouter = layouter.namespace(|| "expose");
+            for (i, assigned_instance) in lhs
+                .x
+                .truncation
+                .limbs
+                .iter()
+                .chain(lhs.y.truncation.limbs.iter())
+                .chain(rhs.x.truncation.limbs.iter())
+                .chain(rhs.y.truncation.limbs.iter())
+                .enumerate()
+            {
+                layouter.constrain_instance(
+                    assigned_instance.cell().clone(),
+                    config.instance,
+                    i,
+                )?;
+            }
+        })
     }
 }
 
