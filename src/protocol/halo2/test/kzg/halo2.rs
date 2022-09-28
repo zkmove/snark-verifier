@@ -5,7 +5,7 @@ use crate::{
     protocol::{
         halo2::{
             test::{
-                kzg::{BITS, LIMBS},
+                kzg::{load_verify_circuit_degree, BITS, LIMBS},
                 StandardPlonk,
             },
             util::halo2::ChallengeScalar,
@@ -189,13 +189,13 @@ impl Accumulation {
             &mut PoseidonTranscript::<G1Affine, _, _, _>::init(snark1.proof.as_slice()),
             &mut strategy
         );
-        halo2_kzg_native_accumulate!(
+        /*halo2_kzg_native_accumulate!(
             &snark2.protocol,
             snark2.statements.clone(),
             ShplonkAccumulationScheme,
             &mut PoseidonTranscript::<G1Affine, _, _, _>::init(snark2.proof.as_slice()),
             &mut strategy
-        );
+        );*/
 
         let g1 = params.get_g()[0];
         let accumulator = strategy.finalize(g1.to_curve());
@@ -208,11 +208,12 @@ impl Accumulation {
         .map(fe_to_limbs::<_, _, LIMBS, BITS>)
         .concat();
 
-        Self { g1, snarks: vec![snark1.into(), snark2.into()], instances }
+        println!("finished constructing aggregation circuit.");
+        Self { g1, snarks: vec![snark1.into() /*, snark2.into()*/], instances }
     }
 
     pub fn two_snark_with_accumulator(zk: bool) -> Self {
-        const K: u32 = 21;
+        const K: u32 = 20;
 
         let (params, pk, protocol, circuits) = halo2_kzg_prepare!(
             K,
@@ -392,6 +393,7 @@ macro_rules! test {
                     Blake2bRead<_, _, _>,
                     Challenge255<_>
                 );
+                /*
                 halo2_kzg_native_verify!(
                     params,
                     &snark.protocol,
@@ -399,6 +401,7 @@ macro_rules! test {
                     ShplonkAccumulationScheme,
                     &mut Blake2bRead::<_, G1Affine, _>::init(snark.proof.as_slice())
                 );
+                */
             }
         }
     };
@@ -411,30 +414,29 @@ macro_rules! test {
 }
 
 test!(
-    #[ignore = "cause it requires 16GB memory to run"],
-    zk_accumulation_two_snark,
-    21,
+    // create aggregation circuit A that aggregates two simple snarks {B,C}, then verify proof of this aggregation circuit A
+    zk_aggregate_two_snarks,
+    20,
     halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
     Accumulation::two_snark(true)
 );
 test!(
-    #[ignore = "cause it requires 32GB memory to run"],
-    zk_accumulation_two_snark_with_accumulator,
-    22,
+    // create aggregation circuit A that aggregates two copies of same aggregation circuit B that aggregates two simple snarks {C, D}, then verifies proof of this aggregation circuit A
+    zk_aggregate_two_snarks_with_accumulator,
+    21, // 21 = 20 + 1 since there are two copies of circuit B
     halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
     Accumulation::two_snark_with_accumulator(true)
 );
+// same as above but with zero-knowledge turned off
 test!(
-    #[ignore = "cause it requires 16GB memory to run"],
-    accumulation_two_snark,
-    21,
+    aggregate_two_snarks,
+    20,
     halo2_kzg_config!(false, 1, Accumulation::accumulator_indices()),
     Accumulation::two_snark(false)
 );
 test!(
-    #[ignore = "cause it requires 32GB memory to run"],
-    accumulation_two_snark_with_accumulator,
-    22,
+    aggregate_two_snarks_with_accumulator,
+    21,
     halo2_kzg_config!(false, 1, Accumulation::accumulator_indices()),
     Accumulation::two_snark_with_accumulator(false)
 );

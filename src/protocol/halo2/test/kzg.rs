@@ -2,7 +2,7 @@ use crate::protocol::halo2::{BITS, LIMBS};
 use halo2_proofs::{
     halo2curves::pairing::Engine,
     poly::{
-        commitment::{CommitmentScheme, Params, ParamsProver},
+        commitment::{CommitmentScheme, Params},
         kzg::commitment::{KZGCommitmentScheme, ParamsKZG},
     },
 };
@@ -40,6 +40,17 @@ pub fn read_or_create_srs<E: Engine + Debug>(k: u32) -> ParamsKZG<E> {
             params
         }
     }
+}
+
+pub fn load_verify_circuit_degree() -> u32 {
+    let mut folder = std::path::PathBuf::new();
+    folder.push("src/configs");
+    folder.push("verify_circuit.config");
+    let params_str = std::fs::read_to_string(folder.as_path())
+        .expect(format!("{} file should exist", folder.to_str().unwrap()).as_str());
+    let params: halo2::Halo2VerifierCircuitConfigParams =
+        serde_json::from_str(params_str.as_str()).unwrap();
+    params.degree
 }
 
 #[macro_export]

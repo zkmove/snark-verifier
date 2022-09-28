@@ -128,6 +128,8 @@ impl<F: PrimeField + FieldExt, L: LoadedScalar<F>, const T: usize, const RATE: u
     }
 
     pub fn squeeze(&mut self) -> L {
+        println!("{:#?}", self.absorbing);
+
         let mut input_elements = vec![];
         input_elements.append(&mut self.absorbing);
 

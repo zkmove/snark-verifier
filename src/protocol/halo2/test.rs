@@ -48,6 +48,7 @@ where
 {
     let mock_time = start_timer!(|| "mock prover");
     for (circuit, instances) in circuits.iter().zip(instances.iter()) {
+        println!("instances: {:#?}", instances);
         MockProver::run::<_, ZK>(
             params.k(),
             circuit,

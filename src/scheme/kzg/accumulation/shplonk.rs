@@ -66,12 +66,9 @@ where
         let evaluations = proof.evaluations(protocol, loader, &common_poly_eval)?;
 
         let f = {
-            let powers_of_mu = proof
-                .mu
-                .powers(sets.iter().map(|set| set.polys.len()).max().unwrap());
-            let msms = sets
-                .iter()
-                .map(|set| set.msm(&commitments, &evaluations, &powers_of_mu));
+            let powers_of_mu =
+                proof.mu.powers(sets.iter().map(|set| set.polys.len()).max().unwrap());
+            let msms = sets.iter().map(|set| set.msm(&commitments, &evaluations, &powers_of_mu));
 
             msms.zip(proof.gamma.powers(sets.len()).into_iter())
                 .map(|(msm, power_of_gamma)| msm * &power_of_gamma)
@@ -112,10 +109,7 @@ impl<C: Curve, L: Loader<C>> ShplonkProof<C, L> {
         transcript: &mut T,
     ) -> Result<Self, Error> {
         if protocol.num_statement
-            != statements
-                .iter()
-                .map(|statements| statements.len())
-                .collect_vec()
+            != statements.iter().map(|statements| statements.len()).collect_vec()
         {
             return Err(Error::InvalidInstances);
         }
@@ -131,10 +125,7 @@ impl<C: Curve, L: Loader<C>> ShplonkProof<C, L> {
                 .iter()
                 .zip(protocol.num_challenge.iter())
                 .map(|(&n, &m)| {
-                    Ok((
-                        transcript.read_n_ec_points(n)?,
-                        transcript.squeeze_n_challenges(m),
-                    ))
+                    Ok((transcript.read_n_ec_points(n)?, transcript.squeeze_n_challenges(m)))
                 })
                 .collect::<Result<Vec<_>, Error>>()?
                 .into_iter()
@@ -147,13 +138,9 @@ impl<C: Curve, L: Loader<C>> ShplonkProof<C, L> {
         };
 
         let alpha = transcript.squeeze_challenge();
+
         let quotients = {
-            let max_degree = protocol
-                .relations
-                .iter()
-                .map(Expression::degree)
-                .max()
-                .unwrap();
+            let max_degree = protocol.relations.iter().map(Expression::degree).max().unwrap();
             transcript.read_n_ec_points(max_degree - 1)?
         };
 
@@ -237,27 +224,13 @@ impl<C: Curve, L: Loader<C>> ShplonkProof<C, L> {
         });
         let mut evaluations = HashMap::<Query, L::LoadedScalar>::from_iter(
             iter::empty()
-                .chain(
-                    statement_evaluations
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, evaluation)| {
-                            (
-                                Query {
-                                    poly: protocol.preprocessed.len() + i,
-                                    rotation: Rotation::cur(),
-                                },
-                                evaluation,
-                            )
-                        }),
-                )
-                .chain(
-                    protocol
-                        .evaluations
-                        .iter()
-                        .cloned()
-                        .zip(self.evaluations.iter().cloned()),
-                ),
+                .chain(statement_evaluations.into_iter().enumerate().map(|(i, evaluation)| {
+                    (
+                        Query { poly: protocol.preprocessed.len() + i, rotation: Rotation::cur() },
+                        evaluation,
+                    )
+                }))
+                .chain(protocol.evaluations.iter().cloned().zip(self.evaluations.iter().cloned())),
         );
 
         let powers_of_alpha = self.alpha.powers(protocol.relations.len());
@@ -272,10 +245,7 @@ impl<C: Curve, L: Loader<C>> ShplonkProof<C, L> {
                             &|scalar| Ok(loader.load_const(&scalar)),
                             &|poly| Ok(common_poly_eval.get(poly)),
                             &|index| {
-                                evaluations
-                                    .get(&index)
-                                    .cloned()
-                                    .ok_or(Error::MissingQuery(index))
+                                evaluations.get(&index).cloned().ok_or(Error::MissingQuery(index))
                             },
                             &|index| {
                                 self.challenges
@@ -294,10 +264,7 @@ impl<C: Curve, L: Loader<C>> ShplonkProof<C, L> {
         ) * &common_poly_eval.zn_minus_one_inv();
 
         evaluations.insert(
-            Query {
-                poly: protocol.vanishing_poly(),
-                rotation: Rotation::cur(),
-            },
+            Query { poly: protocol.vanishing_poly(), rotation: Rotation::cur() },
             quotient_evaluation,
         );
 
@@ -337,9 +304,7 @@ impl<C: Curve, L: Loader<C>> IntermediateSet<C, L> {
                     .iter()
                     .enumerate()
                     .filter(|&(i, _)| i != j)
-                    .fold(C::Scalar::one(), |acc, (_, omega_i)| {
-                        acc * (*omega_j - omega_i)
-                    })
+                    .fold(C::Scalar::one(), |acc, (_, omega_i)| acc * (*omega_j - omega_i))
             })
             .collect_vec();
 
@@ -364,16 +329,8 @@ impl<C: Curve, L: Loader<C>> IntermediateSet<C, L> {
             .map(|(omega, normalized_ell_prime)| {
                 L::LoadedScalar::sum_products_with_coeff_and_constant(
                     &[
-                        (
-                            *normalized_ell_prime,
-                            z_pow_k_minus_one.clone(),
-                            z_prime.clone(),
-                        ),
-                        (
-                            -(*normalized_ell_prime * omega),
-                            z_pow_k_minus_one.clone(),
-                            z.clone(),
-                        ),
+                        (*normalized_ell_prime, z_pow_k_minus_one.clone(), z_prime.clone()),
+                        (-(*normalized_ell_prime * omega), z_pow_k_minus_one.clone(), z.clone()),
                     ],
                     &C::Scalar::zero(),
                 )
@@ -407,11 +364,7 @@ impl<C: Curve, L: Loader<C>> IntermediateSet<C, L> {
                 .collect_vec()
         } else if self.remainder_coeff.is_none() {
             let barycentric_weights_sum = L::LoadedScalar::sum(
-                &self
-                    .evaluation_coeffs
-                    .iter()
-                    .map(Fraction::evaluate)
-                    .collect_vec(),
+                &self.evaluation_coeffs.iter().map(Fraction::evaluate).collect_vec(),
             );
             self.remainder_coeff = Some(match self.commitment_coeff.clone() {
                 Some(coeff) => Fraction::new(coeff.evaluate(), barycentric_weights_sum),
@@ -449,10 +402,7 @@ impl<C: Curve, L: Loader<C>> IntermediateSet<C, L> {
                             .map(|(rotation, coeff)| {
                                 coeff.evaluate()
                                     * evaluations
-                                        .get(&Query {
-                                            poly: *poly,
-                                            rotation: *rotation,
-                                        })
+                                        .get(&Query { poly: *poly, rotation: *rotation })
                                         .unwrap()
                             })
                             .collect_vec(),
@@ -470,21 +420,12 @@ fn intermediate_sets<C: Curve, L: Loader<C>>(
     z_prime: &L::LoadedScalar,
 ) -> Vec<IntermediateSet<C, L>> {
     let rotations_sets = rotations_sets(protocol);
-    let superset = rotations_sets
-        .iter()
-        .flat_map(|set| set.rotations.clone())
-        .sorted()
-        .dedup();
+    let superset = rotations_sets.iter().flat_map(|set| set.rotations.clone()).sorted().dedup();
 
     let size = 2.max(
-        (rotations_sets
-            .iter()
-            .map(|set| set.rotations.len())
-            .max()
-            .unwrap()
-            - 1)
-        .next_power_of_two()
-        .log2() as usize
+        (rotations_sets.iter().map(|set| set.rotations.len()).max().unwrap() - 1)
+            .next_power_of_two()
+            .log2() as usize
             + 1,
     );
     let powers_of_z = z.powers(size);
@@ -503,7 +444,7 @@ fn intermediate_sets<C: Curve, L: Loader<C>>(
     rotations_sets
         .into_iter()
         .map(|set| {
-            let intermetidate_set = IntermediateSet {
+            let intermediate_set = IntermediateSet {
                 polys: set.polys,
                 ..IntermediateSet::new(
                     &protocol.domain,
@@ -516,9 +457,9 @@ fn intermediate_sets<C: Curve, L: Loader<C>>(
                 )
             };
             if z_s_1.is_none() {
-                z_s_1 = Some(intermetidate_set.z_s.clone());
+                z_s_1 = Some(intermediate_set.z_s.clone());
             };
-            intermetidate_set
+            intermediate_set
         })
         .collect()
 }
@@ -532,10 +473,7 @@ fn rotations_sets<C: Curve>(protocol: &Protocol<C>) -> Vec<RotationsSet> {
     let poly_rotations = protocol.queries.iter().fold(
         Vec::<(usize, Vec<Rotation>)>::new(),
         |mut poly_rotations, query| {
-            if let Some(pos) = poly_rotations
-                .iter()
-                .position(|(poly, _)| *poly == query.poly)
-            {
+            if let Some(pos) = poly_rotations.iter().position(|(poly, _)| *poly == query.poly) {
                 let (_, rotations) = &mut poly_rotations[pos];
                 if !rotations.contains(&query.rotation) {
                     rotations.push(query.rotation);
@@ -547,36 +485,25 @@ fn rotations_sets<C: Curve>(protocol: &Protocol<C>) -> Vec<RotationsSet> {
         },
     );
 
-    poly_rotations
-        .into_iter()
-        .fold(Vec::<RotationsSet>::new(), |mut sets, (poly, rotations)| {
-            if let Some(pos) = sets.iter().position(|set| {
-                BTreeSet::from_iter(set.rotations.iter()) == BTreeSet::from_iter(rotations.iter())
-            }) {
-                let set = &mut sets[pos];
-                if !set.polys.contains(&poly) {
-                    set.polys.push(poly);
-                }
-            } else {
-                let set = RotationsSet {
-                    rotations,
-                    polys: vec![poly],
-                };
-                sets.push(set);
+    poly_rotations.into_iter().fold(Vec::<RotationsSet>::new(), |mut sets, (poly, rotations)| {
+        if let Some(pos) = sets.iter().position(|set| {
+            BTreeSet::from_iter(set.rotations.iter()) == BTreeSet::from_iter(rotations.iter())
+        }) {
+            let set = &mut sets[pos];
+            if !set.polys.contains(&poly) {
+                set.polys.push(poly);
             }
-            sets
-        })
+        } else {
+            let set = RotationsSet { rotations, polys: vec![poly] };
+            sets.push(set);
+        }
+        sets
+    })
 }
 
 impl CostEstimation for ShplonkAccumulationScheme {
     fn estimate_cost<C: Curve>(protocol: &Protocol<C>) -> Cost {
-        let num_quotient = protocol
-            .relations
-            .iter()
-            .map(Expression::degree)
-            .max()
-            .unwrap()
-            - 1;
+        let num_quotient = protocol.relations.iter().map(Expression::degree).max().unwrap() - 1;
         let num_accumulator = protocol
             .accumulator_indices
             .as_ref()

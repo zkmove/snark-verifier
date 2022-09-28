@@ -12,6 +12,7 @@ use halo2_ecc::{
         range::RangeConfig,
         Context, GateInstructions,
         QuantumCell::{Constant, Existing, Witness},
+        RangeInstructions,
     },
     utils::fe_to_bigint,
 };
@@ -310,22 +311,7 @@ where
             Value::Constant(constant) => Constant(*constant),
             Value::Assigned(assigned) => Existing(assigned),
         };
-        let output = self
-            .gate()
-            .assign_region_smart(
-                &mut self.ctx_mut(),
-                vec![
-                    c.clone(),
-                    a.clone(),
-                    b.clone(),
-                    Witness(a.value().copied() * b.value() + c.value()),
-                ],
-                vec![0],
-                vec![],
-                vec![],
-            )
-            .unwrap();
-        let output = output[0].clone();
+        let output = self.gate().mul_add(&mut self.ctx_mut(), &a, &b, &c).unwrap();
         self.scalar(Value::Assigned(output))
     }
 
@@ -343,15 +329,20 @@ where
     fn invert(self: &Rc<Self>, scalar: &Scalar<'a, 'b, C>) -> Scalar<'a, 'b, C> {
         let output = match &scalar.value {
             Value::Constant(constant) => Value::Constant(Field::invert(constant).unwrap()),
-            Value::Assigned(assigned) => Value::Assigned(
+            Value::Assigned(assigned) => Value::Assigned({
+                // make sure scalar != 0
+                let is_zero =
+                    RangeInstructions::is_zero(self.range(), &mut self.ctx_mut(), assigned)
+                        .unwrap();
+                self.ctx_mut().constants_to_assign.push((C::Scalar::zero(), Some(is_zero.cell())));
                 GateInstructions::div_unsafe(
                     self.gate(),
                     &mut self.ctx_mut(),
                     &Constant(C::Scalar::one()),
                     &Existing(assigned),
                 )
-                .expect("invert should not fail"),
-            ),
+                .expect("invert should not fail")
+            }),
         };
         self.scalar(output)
     }
@@ -448,11 +439,26 @@ impl<'a, 'b, C: CurveAffine> LoadedScalar<C::Scalar> for Scalar<'a, 'b, C> {
     ) -> Self {
         let loader = values.first().unwrap().1.loader();
         let mut prods = Vec::with_capacity(values.len());
-        for val in values {
-            let prod = Halo2Loader::mul(loader, &val.1, &val.2);
-            prods.push((val.0, prod));
+        for (c, a, b) in values {
+            let a = match &a.value {
+                Value::Assigned(assigned) => Existing(assigned),
+                Value::Constant(constant) => Constant(*constant),
+            };
+            let b = match &b.value {
+                Value::Assigned(assigned) => Existing(assigned),
+                Value::Constant(constant) => Constant(*constant),
+            };
+            prods.push((*c, a, b));
         }
-        Self::sum_with_coeff_and_constant(&prods[..], constant)
+        let output = loader
+            .gate()
+            .sum_products_with_coeff_and_var(
+                &mut loader.ctx_mut(),
+                &prods[..],
+                &Constant(*constant),
+            )
+            .unwrap();
+        loader.scalar(Value::Assigned(output))
     }
 
     fn pow_const(&self, exp: u64) -> Self {
@@ -483,6 +489,14 @@ impl<'a, 'b, C: CurveAffine> LoadedScalar<C::Scalar> for Scalar<'a, 'b, C> {
         }
 
         assert!(exp > 0);
+        let is_zero = RangeInstructions::is_zero(
+            self.loader().range(),
+            &mut self.loader.ctx_mut(),
+            &self.assigned(),
+        )
+        .unwrap();
+        self.loader.ctx_mut().constants_to_assign.push((C::Scalar::zero(), Some(is_zero.cell())));
+
         let naf = get_naf(exp);
         let mut acc = self.clone();
         let mut is_started = false;
