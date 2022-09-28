@@ -375,13 +375,6 @@ macro_rules! test {
                     &protocol,
                     &circuits
                 );
-                halo2_kzg_native_verify!(
-                    Plonk,
-                    params,
-                    &snark.protocol,
-                    &snark.instances,
-                    &mut Blake2bRead::<_, G1Affine, _>::init(snark.proof.as_slice())
-                );
             }
         }
     };
