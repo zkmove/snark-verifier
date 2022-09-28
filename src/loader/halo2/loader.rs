@@ -1,8 +1,10 @@
 use crate::{
     loader::{EcPointLoader, LoadedEcPoint, LoadedScalar, Loader, ScalarLoader},
-    util::{Curve, FieldOps, Itertools},
+    util::{
+        arithmetic::{Curve, CurveAffine, Field, FieldOps, PrimeField},
+        Itertools,
+    },
 };
-use ff::{Field, PrimeField};
 use halo2_ecc::{
     bigint::{CRTInteger, OverflowInteger},
     ecc::{fixed::FixedEccPoint, EccChip, EccPoint},
@@ -11,20 +13,17 @@ use halo2_ecc::{
         flex_gate::FlexGateConfig,
         range::RangeConfig,
         Context, GateInstructions,
-        QuantumCell::{Constant, Existing, Witness},
+        QuantumCell::{self, Constant, Existing, Witness},
         RangeInstructions,
     },
     utils::fe_to_bigint,
 };
-use halo2_proofs::{
-    circuit::{self, AssignedCell},
-    halo2curves::CurveAffine,
-};
+use halo2_proofs::circuit::{self, AssignedCell};
 use num_bigint::{BigInt, BigUint};
 use std::{
     cell::RefCell,
     fmt::{self, Debug},
-    ops::{Add, AddAssign, DerefMut, Mul, MulAssign, Neg, Sub, SubAssign},
+    ops::{Add, AddAssign, Deref, DerefMut, Mul, MulAssign, Neg, Sub, SubAssign},
     rc::Rc,
 };
 
@@ -45,6 +44,15 @@ pub struct Halo2Loader<'a, 'b, C: CurveAffine> {
     pub ecc_chip: EccChip<'a, C::Scalar, BaseFieldChip<C>>,
     ctx: RefCell<Context<'b, C::Scalar>>,
     num_ec_point: RefCell<usize>,
+    num_scalar: RefCell<usize>,
+}
+impl<'a, 'b, C: CurveAffine> Debug for Halo2Loader<'a, 'b, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Halo2Loader")
+            .field("num_ec_point", &self.num_ec_point)
+            .field("num_scalar", &self.num_scalar)
+            .finish()
+    }
 }
 
 impl<'a, 'b, C: CurveAffine> Halo2Loader<'a, 'b, C>
@@ -56,6 +64,7 @@ where
             ecc_chip: EccChip::construct(field_chip),
             ctx: RefCell::new(ctx),
             num_ec_point: RefCell::new(0),
+            num_scalar: RefCell::new(0),
         })
     }
 
@@ -73,6 +82,10 @@ where
 
     pub fn gate(&self) -> &FlexGateConfig<C::Scalar> {
         &self.range().gate
+    }
+
+    pub fn ctx(&self) -> impl Deref<Target = Context<'b, C::Scalar>> + '_ {
+        self.ctx.borrow()
     }
 
     pub(super) fn ctx_mut(&self) -> impl DerefMut<Target = Context<'b, C::Scalar>> + '_ {
@@ -135,7 +148,9 @@ where
     }
 
     pub fn scalar(self: &Rc<Self>, value: Value<C::Scalar, AssignedValue<C>>) -> Scalar<'a, 'b, C> {
-        Scalar { loader: self.clone(), value }
+        let index = *self.num_scalar.borrow();
+        *self.num_scalar.borrow_mut() += 1;
+        Scalar { loader: self.clone(), index, value }
     }
 
     pub fn ec_point(self: &Rc<Self>, assigned: AssignedEcPoint<C>) -> EcPoint<'a, 'b, C> {
@@ -147,15 +162,7 @@ where
     pub fn assign_const_ec_point(self: &Rc<Self>, ec_point: C) -> EcPoint<'a, 'b, C> {
         let index = *self.num_ec_point.borrow();
         *self.num_ec_point.borrow_mut() += 1;
-        EcPoint {
-            loader: self.clone(),
-            value: Value::Constant(FixedEccPoint::from_g1(
-                &ec_point,
-                self.field_chip().num_limbs,
-                self.field_chip().limb_bits,
-            )),
-            index,
-        }
+        EcPoint { loader: self.clone(), value: Value::Constant(ec_point), index }
     }
 
     pub fn assign_ec_point(self: &Rc<Self>, ec_point: circuit::Value<C>) -> EcPoint<'a, 'b, C> {
@@ -387,6 +394,7 @@ where
 #[derive(Clone)]
 pub struct Scalar<'a, 'b, C: CurveAffine> {
     loader: Rc<Halo2Loader<'a, 'b, C>>,
+    index: usize,
     value: Value<C::Scalar, AssignedValue<C>>,
 }
 
@@ -396,6 +404,19 @@ impl<'a, 'b, C: CurveAffine> Scalar<'a, 'b, C> {
             Value::Constant(constant) => self.loader.assign_const_scalar(*constant).assigned(),
             Value::Assigned(assigned) => assigned.clone(),
         }
+    }
+
+    pub fn to_quantum(&self) -> QuantumCell<C::Scalar> {
+        match &self.value {
+            Value::Constant(constant) => Constant(*constant),
+            Value::Assigned(assigned) => Existing(assigned),
+        }
+    }
+}
+
+impl<'a, 'b, C: CurveAffine> PartialEq for Scalar<'a, 'b, C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
     }
 }
 
@@ -408,57 +429,11 @@ impl<'a, 'b, C: CurveAffine> LoadedScalar<C::Scalar> for Scalar<'a, 'b, C> {
 
     fn mul_add(a: &Self, b: &Self, c: &Self) -> Self {
         let loader = a.loader();
-        loader.mul_add(a, b, c)
+        Halo2Loader::mul_add(loader, a, b, c)
     }
 
     fn mul_add_constant(a: &Self, b: &Self, c: &C::Scalar) -> Self {
         Self::mul_add(a, b, &a.loader().scalar(Value::Constant(*c)))
-    }
-
-    fn sum_with_coeff_and_constant(values: &[(C::Scalar, Self)], constant: &C::Scalar) -> Self {
-        let loader = values.first().unwrap().1.loader();
-        let mut a = Vec::with_capacity(values.len() + 1);
-        let mut b = Vec::with_capacity(values.len() + 1);
-        if *constant != C::Scalar::zero() {
-            a.push(Constant(C::Scalar::one()));
-            b.push(Constant(*constant));
-        }
-        a.extend(values.iter().map(|(_, a)| match &a.value {
-            Value::Constant(constant) => Constant(*constant),
-            Value::Assigned(assigned) => Existing(assigned),
-        }));
-        b.extend(values.iter().map(|(c, _)| Constant(*c)));
-        let (_, _, sum, _) = loader.gate().inner_product(&mut loader.ctx_mut(), &a, &b).unwrap();
-
-        loader.scalar(Value::Assigned(sum))
-    }
-
-    fn sum_products_with_coeff_and_constant(
-        values: &[(C::Scalar, Self, Self)],
-        constant: &C::Scalar,
-    ) -> Self {
-        let loader = values.first().unwrap().1.loader();
-        let mut prods = Vec::with_capacity(values.len());
-        for (c, a, b) in values {
-            let a = match &a.value {
-                Value::Assigned(assigned) => Existing(assigned),
-                Value::Constant(constant) => Constant(*constant),
-            };
-            let b = match &b.value {
-                Value::Assigned(assigned) => Existing(assigned),
-                Value::Constant(constant) => Constant(*constant),
-            };
-            prods.push((*c, a, b));
-        }
-        let output = loader
-            .gate()
-            .sum_products_with_coeff_and_var(
-                &mut loader.ctx_mut(),
-                &prods[..],
-                &Constant(*constant),
-            )
-            .unwrap();
-        loader.scalar(Value::Assigned(output))
     }
 
     fn pow_const(&self, exp: u64) -> Self {
@@ -525,7 +500,7 @@ impl<'a, 'b, C: CurveAffine> Debug for Scalar<'a, 'b, C> {
 
 impl<'a, 'b, C: CurveAffine> FieldOps for Scalar<'a, 'b, C> {
     fn invert(&self) -> Option<Self> {
-        Some((&self.loader).invert(self))
+        Some(self.loader.invert(self))
     }
 }
 
@@ -533,14 +508,14 @@ impl<'a, 'b, C: CurveAffine> Add for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
-        (&self.loader).add(&self, &rhs)
+        Halo2Loader::add(&self.loader, &self, &rhs)
     }
 }
 impl<'a, 'b, C: CurveAffine> Sub for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        (&self.loader).sub(&self, &rhs)
+        Halo2Loader::sub(&self.loader, &self, &rhs)
     }
 }
 
@@ -548,7 +523,7 @@ impl<'a, 'b, C: CurveAffine> Mul for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        (&self.loader).mul(&self, &rhs)
+        Halo2Loader::mul(&self.loader, &self, &rhs)
     }
 }
 
@@ -556,7 +531,7 @@ impl<'a, 'b, C: CurveAffine> Neg for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
-        (&self.loader).neg(&self)
+        Halo2Loader::neg(&self.loader, &self)
     }
 }
 
@@ -564,7 +539,7 @@ impl<'a, 'b, 'c, C: CurveAffine> Add<&'c Self> for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn add(self, rhs: &'c Self) -> Self::Output {
-        (&self.loader).add(&self, rhs)
+        Halo2Loader::add(&self.loader, &self, rhs)
     }
 }
 
@@ -572,7 +547,7 @@ impl<'a, 'b, 'c, C: CurveAffine> Sub<&'c Self> for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn sub(self, rhs: &'c Self) -> Self::Output {
-        (&self.loader).sub(&self, rhs)
+        Halo2Loader::sub(&self.loader, &self, rhs)
     }
 }
 
@@ -580,25 +555,25 @@ impl<'a, 'b, 'c, C: CurveAffine> Mul<&'c Self> for Scalar<'a, 'b, C> {
     type Output = Self;
 
     fn mul(self, rhs: &'c Self) -> Self::Output {
-        (&self.loader).mul(&self, rhs)
+        Halo2Loader::mul(&self.loader, &self, rhs)
     }
 }
 
 impl<'a, 'b, C: CurveAffine> AddAssign for Scalar<'a, 'b, C> {
     fn add_assign(&mut self, rhs: Self) {
-        *self = (&self.loader).add(self, &rhs)
+        *self = Halo2Loader::add(&self.loader, self, &rhs)
     }
 }
 
 impl<'a, 'b, C: CurveAffine> SubAssign for Scalar<'a, 'b, C> {
     fn sub_assign(&mut self, rhs: Self) {
-        *self = (&self.loader).sub(self, &rhs)
+        *self = Halo2Loader::sub(&self.loader, self, &rhs)
     }
 }
 
 impl<'a, 'b, C: CurveAffine> MulAssign for Scalar<'a, 'b, C> {
     fn mul_assign(&mut self, rhs: Self) {
-        *self = (&self.loader).mul(self, &rhs)
+        *self = Halo2Loader::mul(&self.loader, self, &rhs)
     }
 }
 
@@ -624,14 +599,19 @@ impl<'a, 'b, 'c, C: CurveAffine> MulAssign<&'c Self> for Scalar<'a, 'b, C> {
 pub struct EcPoint<'a, 'b, C: CurveAffine> {
     loader: Rc<Halo2Loader<'a, 'b, C>>,
     index: usize,
-    pub value: Value<FixedEccPoint<C::Scalar, C>, AssignedEcPoint<C>>,
+    pub value: Value<C, AssignedEcPoint<C>>,
 }
 
 impl<'a, 'b, C: CurveAffine> EcPoint<'a, 'b, C> {
     pub fn assigned(&self) -> AssignedEcPoint<C> {
         match &self.value {
             Value::Constant(constant) => {
-                constant.assign(self.loader.field_chip(), &mut self.loader.ctx_mut()).unwrap()
+                let point = FixedEccPoint::from_g1(
+                    constant,
+                    self.loader.field_chip().num_limbs,
+                    self.loader.field_chip().limb_bits,
+                );
+                point.assign(self.loader.field_chip(), &mut self.loader.ctx_mut()).unwrap()
             }
             Value::Assigned(assigned) => assigned.clone(),
         }
@@ -644,7 +624,7 @@ impl<'a, 'b, C: CurveAffine> PartialEq for EcPoint<'a, 'b, C> {
     }
 }
 
-impl<'a, 'b, C: CurveAffine> LoadedEcPoint<C::CurveExt> for EcPoint<'a, 'b, C>
+impl<'a, 'b, C: CurveAffine> LoadedEcPoint<C> for EcPoint<'a, 'b, C>
 where
     C::Base: PrimeField,
 {
@@ -660,7 +640,9 @@ where
         let pairs = pairs.into_iter().collect_vec();
         let loader = &pairs[0].0.loader;
 
-        let (non_scaled, fixed, scaled) = pairs.iter().fold(
+        let mut sum_constants = None;
+
+        let (mut non_scaled, fixed, scaled) = pairs.iter().fold(
             (Vec::new(), Vec::new(), Vec::new()),
             |(mut non_scaled, mut fixed, mut scaled), (scalar, ec_point)| {
                 if matches!(scalar.value, Value::Constant(constant) if constant == C::Scalar::one())
@@ -669,6 +651,11 @@ where
                 } else {
                     match &ec_point.value {
                         Value::Constant(constant_pt) => {
+                            if let Value::Constant(constant_scalar) = scalar.value {
+                                let prod = (constant_pt.clone() * constant_scalar).to_affine();
+                                sum_constants =
+                                    if let Some(sum) = sum_constants { Some(C::Curve::to_affine(&(sum + prod))) } else { Some(prod) };
+                            }
                             fixed.push((constant_pt.clone(), scalar.assigned()));
                         }
                         Value::Assigned(assigned_pt) => {
@@ -679,6 +666,9 @@ where
                 (non_scaled, fixed, scaled)
             },
         );
+        if let Some(sum) = sum_constants {
+            non_scaled.push(loader.assign_const_ec_point(sum).assigned());
+        }
 
         let mut sum = None;
         if !scaled.is_empty() {
@@ -707,12 +697,17 @@ where
                 acc =
                     loader.ecc_chip.add_unequal(&mut loader.ctx_mut(), &acc, &point, true).unwrap();
             }
-            for (fixed_point, scalar) in fixed.iter() {
+            for (constant_point, scalar) in fixed.iter() {
+                let fixed_point = FixedEccPoint::from_g1(
+                    constant_point,
+                    loader.field_chip().num_limbs,
+                    loader.field_chip().limb_bits,
+                );
                 let fixed_msm = loader
                     .ecc_chip
                     .fixed_base_scalar_mult(
                         &mut loader.ctx_mut(),
-                        fixed_point,
+                        &fixed_point,
                         &vec![scalar.clone()],
                         C::Scalar::NUM_BITS as usize,
                         4,
@@ -809,14 +804,99 @@ impl<'a, 'b, C: CurveAffine> ScalarLoader<C::Scalar> for Rc<Halo2Loader<'a, 'b, 
     fn load_const(&self, value: &C::Scalar) -> Scalar<'a, 'b, C> {
         self.scalar(Value::Constant(*value))
     }
-}
 
-impl<'a, 'b, C: CurveAffine> EcPointLoader<C::CurveExt> for Rc<Halo2Loader<'a, 'b, C>> {
-    type LoadedEcPoint = EcPoint<'a, 'b, C>;
+    fn assert_eq(
+        &self,
+        annotation: &str,
+        lhs: &Self::LoadedScalar,
+        rhs: &Self::LoadedScalar,
+    ) -> Result<(), crate::Error> {
+        match (&lhs.value, &rhs.value) {
+            (Value::Constant(lhs), Value::Constant(rhs)) => {
+                assert_eq!(*lhs, *rhs);
+            }
+            _ => {
+                let loader = lhs.loader();
+                loader.gate().assert_equal(
+                    &mut loader.ctx_mut(),
+                    &lhs.to_quantum(),
+                    &rhs.to_quantum(),
+                ).expect(annotation);
+            }
+        }
+        Ok(())
+    }
 
-    fn ec_point_load_const(&self, ec_point: &C::CurveExt) -> EcPoint<'a, 'b, C> {
-        self.assign_const_ec_point(ec_point.to_affine())
+    fn sum_with_coeff_and_constant(
+        &self,
+        values: &[(C::Scalar, &Self::LoadedScalar)],
+        constant: C::Scalar,
+    ) -> Self::LoadedScalar {
+        let mut a = Vec::with_capacity(values.len() + 1);
+        let mut b = Vec::with_capacity(values.len() + 1);
+        if constant != C::Scalar::zero() {
+            a.push(Constant(C::Scalar::one()));
+            b.push(Constant(constant));
+        }
+        a.extend(values.iter().map(|(_, a)| match &a.value {
+            Value::Constant(constant) => Constant(*constant),
+            Value::Assigned(assigned) => Existing(assigned),
+        }));
+        b.extend(values.iter().map(|(c, _)| Constant(*c)));
+        let (_, _, sum, _) = self.gate().inner_product(&mut self.ctx_mut(), &a, &b).unwrap();
+
+        self.scalar(Value::Assigned(sum))
+    }
+
+    fn sum_products_with_coeff_and_constant(
+        &self,
+        values: &[(C::Scalar, &Self::LoadedScalar, &Self::LoadedScalar)],
+        constant: C::Scalar,
+    ) -> Self::LoadedScalar {
+        let mut prods = Vec::with_capacity(values.len());
+        for (c, a, b) in values {
+            let a = match &a.value {
+                Value::Assigned(assigned) => Existing(assigned),
+                Value::Constant(constant) => Constant(*constant),
+            };
+            let b = match &b.value {
+                Value::Assigned(assigned) => Existing(assigned),
+                Value::Constant(constant) => Constant(*constant),
+            };
+            prods.push((*c, a, b));
+        }
+        let output = self
+            .gate()
+            .sum_products_with_coeff_and_var(&mut self.ctx_mut(), &prods[..], &Constant(constant))
+            .unwrap();
+        self.scalar(Value::Assigned(output))
     }
 }
 
-impl<'a, 'b, C: CurveAffine> Loader<C::CurveExt> for Rc<Halo2Loader<'a, 'b, C>> {}
+impl<'a, 'b, C: CurveAffine> EcPointLoader<C> for Rc<Halo2Loader<'a, 'b, C>> {
+    type LoadedEcPoint = EcPoint<'a, 'b, C>;
+
+    fn ec_point_load_const(&self, ec_point: &C) -> EcPoint<'a, 'b, C> {
+        self.assign_const_ec_point(*ec_point)
+    }
+
+    fn ec_point_assert_eq(
+        &self,
+        annotation: &str,
+        lhs: &Self::LoadedEcPoint,
+        rhs: &Self::LoadedEcPoint,
+    ) -> Result<(), crate::Error> {
+        let loader = lhs.loader();
+        match (&lhs.value, &rhs.value) {
+            (Value::Constant(lhs), Value::Constant(rhs)) => {
+                assert_eq!(*lhs, *rhs);
+            },
+            _ => {
+                loader.ecc_chip.assert_equal(&mut loader.ctx_mut(), &lhs.assigned(), &rhs.assigned()).expect(annotation);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a, 'b, C: CurveAffine> Loader<C> for Rc<Halo2Loader<'a, 'b, C>> {}
