@@ -64,6 +64,7 @@ where
     EC: EncodedChallenge<S::Curve>,
     R: RngCore,
 {
+    /*
     let mock_time = start_timer!(|| "mock prover");
     for (circuit, instances) in circuits.iter().zip(instances.iter()) {
         MockProver::run(
@@ -75,6 +76,7 @@ where
         .assert_satisfied();
     }
     end_timer!(mock_time);
+    */
 
     let proof_time = start_timer!(|| "create proof");
     let proof = {

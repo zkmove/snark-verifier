@@ -30,7 +30,7 @@ serde_json  = "1.0"
 ark-std = { version = "0.3", features = ["print-trace"] }
 
 # loader_evm
-foundry_evm = { git = "https://github.com/han0110/foundry", package = "foundry-evm", branch = "fix/pin-revm-to-rev" }
+foundry_evm = { git = "https://github.com/jonathanpwang/foundry", package = "foundry-evm", branch = "fix/pin-revm-to-rev" }
 crossterm = { version = "0.22.1" }
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 

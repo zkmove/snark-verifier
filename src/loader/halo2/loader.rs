@@ -167,9 +167,14 @@ where
 
     pub fn assign_ec_point(self: &Rc<Self>, ec_point: circuit::Value<C>) -> EcPoint<'a, 'b, C> {
         let assigned = self.ecc_chip.assign_point(&mut self.ctx_mut(), ec_point).unwrap();
-        self.ecc_chip
-            .assert_is_on_curve::<C>(&mut self.ctx_mut(), &assigned)
-            .expect("ec point should lie on curve");
+        let is_on_curve_or_infinity =
+            self.ecc_chip.is_on_curve_or_infinity::<C>(&mut self.ctx_mut(), &assigned).unwrap();
+        self.gate().assert_is_const(
+            &mut self.ctx_mut(),
+            &is_on_curve_or_infinity,
+            C::Scalar::one(),
+        );
+
         self.ec_point(assigned)
     }
 
@@ -341,7 +346,7 @@ where
                 let is_zero =
                     RangeInstructions::is_zero(self.range(), &mut self.ctx_mut(), assigned)
                         .unwrap();
-                self.ctx_mut().constants_to_assign.push((C::Scalar::zero(), Some(is_zero.cell())));
+                self.gate().assert_is_const(&mut self.ctx_mut(), &is_zero, C::Scalar::zero());
                 GateInstructions::div_unsafe(
                     self.gate(),
                     &mut self.ctx_mut(),
@@ -470,7 +475,7 @@ impl<'a, 'b, C: CurveAffine> LoadedScalar<C::Scalar> for Scalar<'a, 'b, C> {
             &self.assigned(),
         )
         .unwrap();
-        self.loader.ctx_mut().constants_to_assign.push((C::Scalar::zero(), Some(is_zero.cell())));
+        self.loader.gate().assert_is_const(&mut self.loader.ctx_mut(), &is_zero, C::Scalar::zero());
 
         let naf = get_naf(exp);
         let mut acc = self.clone();
@@ -653,8 +658,11 @@ where
                         Value::Constant(constant_pt) => {
                             if let Value::Constant(constant_scalar) = scalar.value {
                                 let prod = (constant_pt.clone() * constant_scalar).to_affine();
-                                sum_constants =
-                                    if let Some(sum) = sum_constants { Some(C::Curve::to_affine(&(sum + prod))) } else { Some(prod) };
+                                sum_constants = if let Some(sum) = sum_constants {
+                                    Some(C::Curve::to_affine(&(sum + prod)))
+                                } else {
+                                    Some(prod)
+                                };
                             }
                             fixed.push((constant_pt.clone(), scalar.assigned()));
                         }
@@ -698,6 +706,9 @@ where
                     loader.ecc_chip.add_unequal(&mut loader.ctx_mut(), &acc, &point, true).unwrap();
             }
             for (constant_point, scalar) in fixed.iter() {
+                if constant_point.is_identity().into() {
+                    continue;
+                }
                 let fixed_point = FixedEccPoint::from_g1(
                     constant_point,
                     loader.field_chip().num_limbs,
@@ -817,11 +828,10 @@ impl<'a, 'b, C: CurveAffine> ScalarLoader<C::Scalar> for Rc<Halo2Loader<'a, 'b, 
             }
             _ => {
                 let loader = lhs.loader();
-                loader.gate().assert_equal(
-                    &mut loader.ctx_mut(),
-                    &lhs.to_quantum(),
-                    &rhs.to_quantum(),
-                ).expect(annotation);
+                loader
+                    .gate()
+                    .assert_equal(&mut loader.ctx_mut(), &lhs.to_quantum(), &rhs.to_quantum())
+                    .expect(annotation);
             }
         }
         Ok(())
@@ -890,9 +900,12 @@ impl<'a, 'b, C: CurveAffine> EcPointLoader<C> for Rc<Halo2Loader<'a, 'b, C>> {
         match (&lhs.value, &rhs.value) {
             (Value::Constant(lhs), Value::Constant(rhs)) => {
                 assert_eq!(*lhs, *rhs);
-            },
+            }
             _ => {
-                loader.ecc_chip.assert_equal(&mut loader.ctx_mut(), &lhs.assigned(), &rhs.assigned()).expect(annotation);
+                loader
+                    .ecc_chip
+                    .assert_equal(&mut loader.ctx_mut(), &lhs.assigned(), &rhs.assigned())
+                    .expect(annotation);
             }
         }
         Ok(())
