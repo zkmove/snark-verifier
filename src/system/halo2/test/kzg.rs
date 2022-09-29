@@ -1,5 +1,5 @@
-use crate::{system::halo2::test::read_or_create_srs, util::arithmetic::MultiMillerLoop};
-use halo2_proofs::poly::{commitment::ParamsProver, kzg::commitment::ParamsKZG};
+use crate::util::arithmetic::MultiMillerLoop;
+use halo2_proofs::poly::kzg::commitment::ParamsKZG;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
 mod native;
@@ -10,7 +10,8 @@ mod evm;
 #[cfg(feature = "loader_halo2")]
 pub(crate) mod halo2;
 
-pub const TESTDATA_DIR: &str = "./src/system/halo2/test/kzg/testdata";
+#[allow(dead_code)]
+pub const TESTDATA_DIR: &str = "./src/system/halo2/test/data";
 
 pub const LIMBS: usize = 3;
 pub const BITS: usize = 88;
@@ -34,6 +35,7 @@ macro_rules! halo2_kzg_config {
 macro_rules! halo2_kzg_prepare {
     ($k:expr, $config:expr, $create_circuit:expr) => {{
         use halo2_curves::bn256::Bn256;
+        #[allow(unused_imports)]
         use $crate::system::halo2::test::{
             halo2_prepare,
             kzg::{setup, TESTDATA_DIR},

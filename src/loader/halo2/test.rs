@@ -3,7 +3,6 @@ use crate::{
     Protocol,
 };
 use halo2_proofs::circuit::Value;
-
 mod circuit;
 
 pub use circuit::standard::StandardPlonk;

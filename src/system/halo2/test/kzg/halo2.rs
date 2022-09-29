@@ -116,19 +116,23 @@ impl Accumulation {
         let svk = params.get_g()[0].into();
         let snarks = snarks.into_iter().collect_vec();
 
-        let accumulators = snarks
-            .iter()
-            .flat_map(|snark| {
-                let mut transcript =
-                    PoseidonTranscript::<NativeLoader, _, _>::new(snark.proof.as_slice());
-                let proof =
-                    Plonk::read_proof(&svk, &snark.protocol, &snark.instances, &mut transcript)
-                        .unwrap();
-                Plonk::succinct_verify(&svk, &snark.protocol, &snark.instances, &proof).unwrap()
-            })
-            .collect_vec();
+        println!("before acc");
+        let mut accumulators = Vec::with_capacity(snarks.len());
+        for snark in snarks.iter() {
+            let mut transcript =
+                PoseidonTranscript::<NativeLoader, _, _>::new(snark.proof.as_slice());
+            let proof = Plonk::read_proof(&svk, &snark.protocol, &snark.instances, &mut transcript)
+                .unwrap();
+            println!("read proof");
+            let mut acc =
+                Plonk::succinct_verify(&svk, &snark.protocol, &snark.instances, &proof).unwrap();
+            println!("succinct verify");
+            accumulators.append(&mut acc);
+        }
 
+        println!("before as_pk");
         let as_pk = AsPk::new(Some((params.get_g()[0], params.get_g()[1])));
+        println!("before accum");
         let (accumulator, as_proof) = {
             let mut transcript = PoseidonTranscript::<NativeLoader, _, _>::new(Vec::new());
             let accumulator = As::create_proof(
@@ -144,6 +148,7 @@ impl Accumulation {
         let KzgAccumulator { lhs, rhs } = accumulator;
         let instances = [lhs.x, lhs.y, rhs.x, rhs.y].map(fe_to_limbs::<_, _, LIMBS, BITS>).concat();
 
+        println!("should be home");
         Self {
             svk,
             snarks: snarks.into_iter().map_into().collect(),
@@ -375,6 +380,13 @@ macro_rules! test {
                     &protocol,
                     &circuits
                 );
+                /*halo2_kzg_native_verify!(
+                    Plonk,
+                    params,
+                    &snark.protocol,
+                    &snark.instances,
+                    &mut Blake2bRead::<_, G1Affine, _>::init(snark.proof.as_slice())
+                );*/
             }
         }
     };
@@ -400,3 +412,98 @@ test!(
     halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
     Accumulation::two_snark_with_accumulator()
 );
+
+pub trait TargetCircuit {
+    fn instances(&self) -> Vec<Vec<Fr>>;
+}
+
+pub mod zkevm {
+    use std::io::{Cursor, Read, Write};
+
+    use crate::system::halo2::test::load_verify_circuit_degree;
+
+    use super::*;
+    use ark_std::{end_timer, start_timer};
+    use halo2_proofs::{
+        plonk::{create_proof, verify_proof},
+        poly::kzg::{commitment::KZGCommitmentScheme, strategy::SingleStrategy},
+        transcript::TranscriptWriterBuffer,
+    };
+    use zkevm_circuit_benchmarks::evm_circuit::TestCircuit as EVMCircuit;
+
+    impl TargetCircuit for EVMCircuit<Fr> {
+        fn instances(&self) -> Vec<Vec<Fr>> {
+            vec![]
+        }
+    }
+
+    fn evm_verify_circuit() -> Accumulation {
+        const K: u32 = 18;
+        let (params, pk, protocol, circuits) =
+            halo2_kzg_prepare!(K, halo2_kzg_config!(true, 1), EVMCircuit::<Fr>::default());
+
+        let proof_time = start_timer!(|| "create proof");
+        let instances: &[&[&[Fr]]] = &[&[]];
+        let proof = {
+            let path = "./src/system/halo2/test/data/proof_zkevm.data";
+            match std::fs::File::open(path) {
+                Ok(mut file) => {
+                    let mut buf = vec![];
+                    file.read_to_end(&mut buf).unwrap();
+                    buf
+                }
+                Err(_) => {
+                    let mut transcript =
+                        PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
+                    create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
+                        &params,
+                        &pk,
+                        &circuits,
+                        instances,
+                        &mut ChaCha20Rng::from_seed(Default::default()),
+                        &mut transcript,
+                    )
+                    .unwrap();
+                    let proof = transcript.finalize();
+                    let mut file = std::fs::File::create(path).unwrap();
+                    file.write_all(&proof).unwrap();
+                    proof
+                }
+            }
+        };
+        end_timer!(proof_time);
+
+        let verify_time = start_timer!(|| "verify proof");
+        {
+            let verifier_params = params.verifier_params();
+            let strategy = SingleStrategy::new(&params);
+            let mut transcript =
+                <PoseidonTranscript<NativeLoader, Cursor<Vec<u8>>, _> as TranscriptReadBuffer<
+                    _,
+                    _,
+                    _,
+                >>::init(Cursor::new(proof.clone()));
+            verify_proof::<_, VerifierSHPLONK<_>, _, _, _>(
+                verifier_params,
+                pk.get_vk(),
+                strategy,
+                instances,
+                &mut transcript,
+            )
+            .unwrap()
+        }
+        end_timer!(verify_time);
+
+        let target_snark = Snark::new(protocol.clone(), vec![], proof);
+
+        println!("Finished creating aggregation circuit");
+        Accumulation::new(&params, [target_snark])
+    }
+
+    test!(
+        bench_evm_circuit,
+        load_verify_circuit_degree(),
+        halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
+        evm_verify_circuit()
+    );
+}

@@ -34,6 +34,9 @@ foundry_evm = { git = "https://github.com/han0110/foundry", package = "foundry-e
 crossterm = { version = "0.22.1" }
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 
+# zkevm
+zkevm_circuit_benchmarks = {git = "https://github.com/privacy-scaling-explorations/zkevm-circuits.git", package = "circuit-benchmarks", features = ["benches"] }
+
 [features]
 default = ["loader_halo2", "system_halo2"]
 
