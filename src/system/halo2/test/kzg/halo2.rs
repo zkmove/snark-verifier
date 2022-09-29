@@ -75,7 +75,7 @@ pub fn accumulate<'a, 'b>(
             .collect_vec()
     };
 
-    let accumulators = snarks
+    let mut accumulators = snarks
         .iter()
         .flat_map(|snark| {
             let instances = assign_instances(&snark.instances);
@@ -87,10 +87,12 @@ pub fn accumulate<'a, 'b>(
         })
         .collect_vec();
 
-    let acccumulator = {
+    let acccumulator = if accumulators.len() > 1 {
         let mut transcript = PoseidonTranscript::<Rc<Halo2Loader>, _, _>::new(loader, as_proof);
         let proof = As::read_proof(as_vk, &accumulators, &mut transcript).unwrap();
         As::verify(as_vk, &accumulators, &proof).unwrap()
+    } else {
+        accumulators.pop().unwrap()
     };
 
     acccumulator
@@ -116,24 +118,20 @@ impl Accumulation {
         let svk = params.get_g()[0].into();
         let snarks = snarks.into_iter().collect_vec();
 
-        println!("before acc");
-        let mut accumulators = Vec::with_capacity(snarks.len());
-        for snark in snarks.iter() {
-            let mut transcript =
-                PoseidonTranscript::<NativeLoader, _, _>::new(snark.proof.as_slice());
-            let proof = Plonk::read_proof(&svk, &snark.protocol, &snark.instances, &mut transcript)
-                .unwrap();
-            println!("read proof");
-            let mut acc =
-                Plonk::succinct_verify(&svk, &snark.protocol, &snark.instances, &proof).unwrap();
-            println!("succinct verify");
-            accumulators.append(&mut acc);
-        }
+        let mut accumulators = snarks
+            .iter()
+            .flat_map(|snark| {
+                let mut transcript =
+                    PoseidonTranscript::<NativeLoader, _, _>::new(snark.proof.as_slice());
+                let proof =
+                    Plonk::read_proof(&svk, &snark.protocol, &snark.instances, &mut transcript)
+                        .unwrap();
+                Plonk::succinct_verify(&svk, &snark.protocol, &snark.instances, &proof).unwrap()
+            })
+            .collect_vec();
 
-        println!("before as_pk");
         let as_pk = AsPk::new(Some((params.get_g()[0], params.get_g()[1])));
-        println!("before accum");
-        let (accumulator, as_proof) = {
+        let (accumulator, as_proof) = if accumulators.len() > 1 {
             let mut transcript = PoseidonTranscript::<NativeLoader, _, _>::new(Vec::new());
             let accumulator = As::create_proof(
                 &as_pk,
@@ -142,19 +140,20 @@ impl Accumulation {
                 ChaCha20Rng::from_seed(Default::default()),
             )
             .unwrap();
-            (accumulator, transcript.finalize())
+            (accumulator, Value::known(transcript.finalize()))
+        } else {
+            (accumulators.pop().unwrap(), Value::unknown())
         };
 
         let KzgAccumulator { lhs, rhs } = accumulator;
         let instances = [lhs.x, lhs.y, rhs.x, rhs.y].map(fe_to_limbs::<_, _, LIMBS, BITS>).concat();
 
-        println!("should be home");
         Self {
             svk,
             snarks: snarks.into_iter().map_into().collect(),
             instances,
             as_vk: as_pk.vk(),
-            as_proof: Value::known(as_proof),
+            as_proof,
         }
     }
 
