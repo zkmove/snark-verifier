@@ -1,6 +1,6 @@
 use crate::{
-    loader,
     loader::{
+        self,
         halo2::test::{Snark, SnarkWitness, StandardPlonk},
         native::NativeLoader,
     },
@@ -12,37 +12,46 @@ use crate::{
         AccumulationScheme, AccumulationSchemeProver,
     },
     system::halo2::{
-        test::kzg::{
-            halo2_kzg_config, halo2_kzg_create_snark, halo2_kzg_native_verify, halo2_kzg_prepare,
-            BITS, LIMBS,
+        test::{
+            kzg::{
+                halo2_kzg_config, halo2_kzg_create_snark, halo2_kzg_native_verify,
+                halo2_kzg_prepare, BITS, LIMBS,
+            },
+            load_verify_circuit_degree,
         },
         transcript::halo2::{ChallengeScalar, PoseidonTranscript as GenericPoseidonTranscript},
+        Halo2VerifierCircuitConfig, Halo2VerifierCircuitConfigParams,
     },
     util::{arithmetic::fe_to_limbs, Itertools},
     verifier::{self, PlonkVerifier},
 };
+use ark_std::{end_timer, start_timer};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
 use halo2_ecc::{
-    fields::fp::{FpConfig, FpStrategy},
+    fields::fp::FpConfig,
     gates::{Context, ContextParams},
 };
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk,
-    plonk::{Circuit, Column, Instance},
+    plonk::{self, create_proof, verify_proof, Circuit},
     poly::{
         commitment::ParamsProver,
         kzg::{
-            commitment::ParamsKZG,
+            commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::{ProverSHPLONK, VerifierSHPLONK},
+            strategy::SingleStrategy,
         },
     },
-    transcript::{Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer},
+    transcript::{
+        Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+    },
 };
 use paste::paste;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-use serde::{Deserialize, Serialize};
-use std::rc::Rc;
+use std::{
+    io::{Cursor, Read, Write},
+    rc::Rc,
+};
 
 const T: usize = 5;
 const RATE: usize = 4;
@@ -232,25 +241,6 @@ impl Accumulation {
     }
 }
 
-// for tuning the circuit
-#[derive(Serialize, Deserialize)]
-pub struct Halo2VerifierCircuitConfigParams {
-    pub strategy: FpStrategy,
-    pub degree: u32,
-    pub num_advice: usize,
-    pub num_lookup_advice: usize,
-    pub num_fixed: usize,
-    pub lookup_bits: usize,
-    pub limb_bits: usize,
-    pub num_limbs: usize,
-}
-
-#[derive(Clone)]
-pub struct Halo2VerifierCircuitConfig {
-    pub base_field_config: FpConfig<Fr, Fq>,
-    pub instance: Column<Instance>,
-}
-
 impl Circuit<Fr> for Accumulation {
     type Config = Halo2VerifierCircuitConfig;
     type FloorPlanner = SimpleFloorPlanner;
@@ -379,13 +369,13 @@ macro_rules! test {
                     &protocol,
                     &circuits
                 );
-                /*halo2_kzg_native_verify!(
+                halo2_kzg_native_verify!(
                     Plonk,
                     params,
                     &snark.protocol,
                     &snark.instances,
                     &mut Blake2bRead::<_, G1Affine, _>::init(snark.proof.as_slice())
-                );*/
+                );
             }
         }
     };
@@ -412,91 +402,112 @@ test!(
     Accumulation::two_snark_with_accumulator()
 );
 
-pub trait TargetCircuit {
+pub trait TargetCircuit: Circuit<Fr> {
+    const TARGET_CIRCUIT_K: u32;
+    const PUBLIC_INPUT_SIZE: usize;
+    const N_PROOFS: usize;
+    const NAME: &'static str;
+
+    fn default_circuit() -> Self;
     fn instances(&self) -> Vec<Vec<Fr>>;
 }
 
-pub mod zkevm {
-    use std::io::{Cursor, Read, Write};
+pub fn create_snark<T: TargetCircuit>() -> (ParamsKZG<Bn256>, Snark<G1Affine>) {
+    let (params, pk, protocol, circuits) = halo2_kzg_prepare!(
+        T::TARGET_CIRCUIT_K,
+        halo2_kzg_config!(true, T::N_PROOFS),
+        T::default_circuit()
+    );
 
-    use crate::system::halo2::test::load_verify_circuit_degree;
+    let proof_time = start_timer!(|| "create proof");
+    // usual shenanigans to turn nested Vec into nested slice
+    let instances0: Vec<Vec<Vec<Fr>>> =
+        circuits.iter().map(|circuit| T::instances(circuit)).collect_vec();
+    let instances1: Vec<Vec<&[Fr]>> = instances0
+        .iter()
+        .map(|instances| instances.iter().map(Vec::as_slice).collect_vec())
+        .collect_vec();
+    let instances2: Vec<&[&[Fr]]> = instances1.iter().map(Vec::as_slice).collect_vec();
+    // TODO: need to cache the instances as well!
 
-    use super::*;
-    use ark_std::{end_timer, start_timer};
-    use halo2_proofs::{
-        plonk::{create_proof, verify_proof},
-        poly::kzg::{commitment::KZGCommitmentScheme, strategy::SingleStrategy},
-        transcript::TranscriptWriterBuffer,
+    let proof = {
+        let path = format!("./src/system/halo2/test/data/proof_{}.data", T::NAME);
+        match std::fs::File::open(path.as_str()) {
+            Ok(mut file) => {
+                let mut buf = vec![];
+                file.read_to_end(&mut buf).unwrap();
+                buf
+            }
+            Err(_) => {
+                let mut transcript =
+                    PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
+                create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
+                    &params,
+                    &pk,
+                    &circuits,
+                    instances2.as_slice(),
+                    &mut ChaCha20Rng::from_seed(Default::default()),
+                    &mut transcript,
+                )
+                .unwrap();
+                let proof = transcript.finalize();
+                let mut file = std::fs::File::create(path.as_str()).unwrap();
+                file.write_all(&proof).unwrap();
+                proof
+            }
+        }
     };
-    use zkevm_circuit_benchmarks::evm_circuit::TestCircuit as EVMCircuit;
+    end_timer!(proof_time);
 
-    impl TargetCircuit for EVMCircuit<Fr> {
+    println!("{:#?}", pk.get_vk().cs());
+    let verify_time = start_timer!(|| "verify proof");
+    {
+        let verifier_params = params.verifier_params();
+        let strategy = SingleStrategy::new(&params);
+        let mut transcript =
+            <PoseidonTranscript<NativeLoader, Cursor<Vec<u8>>, _> as TranscriptReadBuffer<
+                _,
+                _,
+                _,
+            >>::init(Cursor::new(proof.clone()));
+        verify_proof::<_, VerifierSHPLONK<_>, _, _, _>(
+            verifier_params,
+            pk.get_vk(),
+            strategy,
+            instances2.as_slice(),
+            &mut transcript,
+        )
+        .unwrap()
+    }
+    end_timer!(verify_time);
+
+    (params, Snark::new(protocol.clone(), instances0.into_iter().flatten().collect_vec(), proof))
+}
+
+pub mod zkevm {
+    use super::*;
+    use zkevm_circuit_benchmarks::evm_circuit::TestCircuit as EvmCircuit;
+    use zkevm_circuits::evm_circuit::witness::RwMap;
+    use zkevm_circuits::state_circuit::StateCircuit;
+
+    impl TargetCircuit for EvmCircuit<Fr> {
+        const TARGET_CIRCUIT_K: u32 = 18;
+        const PUBLIC_INPUT_SIZE: usize = 0; // (Self::TARGET_CIRCUIT_K * 2) as usize;
+        const N_PROOFS: usize = 1;
+        const NAME: &'static str = "zkevm";
+
+        fn default_circuit() -> Self {
+            Self::default()
+        }
         fn instances(&self) -> Vec<Vec<Fr>> {
             vec![]
         }
     }
 
     fn evm_verify_circuit() -> Accumulation {
-        const K: u32 = 18;
-        let (params, pk, protocol, circuits) =
-            halo2_kzg_prepare!(K, halo2_kzg_config!(true, 1), EVMCircuit::<Fr>::default());
-
-        let proof_time = start_timer!(|| "create proof");
-        let instances: &[&[&[Fr]]] = &[&[]];
-        let proof = {
-            let path = "./src/system/halo2/test/data/proof_zkevm.data";
-            match std::fs::File::open(path) {
-                Ok(mut file) => {
-                    let mut buf = vec![];
-                    file.read_to_end(&mut buf).unwrap();
-                    buf
-                }
-                Err(_) => {
-                    let mut transcript =
-                        PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
-                    create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
-                        &params,
-                        &pk,
-                        &circuits,
-                        instances,
-                        &mut ChaCha20Rng::from_seed(Default::default()),
-                        &mut transcript,
-                    )
-                    .unwrap();
-                    let proof = transcript.finalize();
-                    let mut file = std::fs::File::create(path).unwrap();
-                    file.write_all(&proof).unwrap();
-                    proof
-                }
-            }
-        };
-        end_timer!(proof_time);
-
-        let verify_time = start_timer!(|| "verify proof");
-        {
-            let verifier_params = params.verifier_params();
-            let strategy = SingleStrategy::new(&params);
-            let mut transcript =
-                <PoseidonTranscript<NativeLoader, Cursor<Vec<u8>>, _> as TranscriptReadBuffer<
-                    _,
-                    _,
-                    _,
-                >>::init(Cursor::new(proof.clone()));
-            verify_proof::<_, VerifierSHPLONK<_>, _, _, _>(
-                verifier_params,
-                pk.get_vk(),
-                strategy,
-                instances,
-                &mut transcript,
-            )
-            .unwrap()
-        }
-        end_timer!(verify_time);
-
-        let target_snark = Snark::new(protocol.clone(), vec![], proof);
-
-        println!("Finished creating aggregation circuit");
-        Accumulation::new(&params, [target_snark])
+        let (params, evm_snark) = create_snark::<EvmCircuit<Fr>>();
+        println!("creating aggregation circuit");
+        Accumulation::new(&params, [evm_snark])
     }
 
     test!(
@@ -504,5 +515,46 @@ pub mod zkevm {
         load_verify_circuit_degree(),
         halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
         evm_verify_circuit()
+    );
+
+    impl TargetCircuit for StateCircuit<Fr> {
+        const TARGET_CIRCUIT_K: u32 = 18;
+        const PUBLIC_INPUT_SIZE: usize = 0; //(Self::TARGET_CIRCUIT_K * 2) as usize;
+        const N_PROOFS: usize = 1;
+        const NAME: &'static str = "state-circuit";
+
+        fn default_circuit() -> Self {
+            StateCircuit::<Fr>::new(Fr::default(), RwMap::default(), 1 << 16)
+        }
+        fn instances(&self) -> Vec<Vec<Fr>> {
+            self.instance()
+        }
+    }
+
+    fn state_verify_circuit() -> Accumulation {
+        let (params, snark) = create_snark::<StateCircuit<Fr>>();
+        println!("creating aggregation circuit");
+        Accumulation::new(&params, [snark])
+    }
+
+    test!(
+        bench_state_circuit,
+        load_verify_circuit_degree(),
+        halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
+        state_verify_circuit()
+    );
+
+    fn evm_and_state_aggregation_circuit() -> Accumulation {
+        let (params, evm_snark) = create_snark::<EvmCircuit<Fr>>();
+        let (_, state_snark) = create_snark::<StateCircuit<Fr>>();
+        println!("creating aggregation circuit");
+        Accumulation::new(&params, [evm_snark, state_snark])
+    }
+
+    test!(
+        bench_evm_and_state,
+        load_verify_circuit_degree(),
+        halo2_kzg_config!(true, 1, Accumulation::accumulator_indices()),
+        evm_and_state_aggregation_circuit()
     );
 }

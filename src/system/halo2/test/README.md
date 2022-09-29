@@ -6,6 +6,14 @@ In `plonk-verifier` root directory:
 
 3. Create `src/system/halo2/test/data` directory. Then run
 
+For single evm circuit verification:
+
 ```
 cargo test --release -- --nocapture system::halo2::test::kzg::halo2::zkevm::test_shplonk_bench_evm_circuit --exact
+```
+
+For evm circuit + state circuit aggregation:
+
+```
+cargo test --release -- --nocapture system::halo2::test::kzg::halo2::zkevm::test_shplonk_bench_evm_and_state --exact
 ```

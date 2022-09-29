@@ -8,12 +8,20 @@ use crate::{
     },
     Protocol,
 };
+use halo2_curves::bn256::{Fq, Fr};
 use halo2_proofs::{
-    plonk::{self, Any, ConstraintSystem, FirstPhase, SecondPhase, ThirdPhase, VerifyingKey},
-    poly::{self, commitment::Params},
+    plonk::{
+        self, Any, Column, ConstraintSystem, FirstPhase, Instance, SecondPhase, ThirdPhase,
+        VerifyingKey,
+    },
+    poly::{
+        self,
+        commitment::{Params, ParamsProver},
+    },
     transcript::{EncodedChallenge, Transcript},
 };
-use std::{io, iter, mem::size_of};
+use serde::{Deserialize, Serialize};
+use std::{fs, io, iter, mem::size_of};
 
 pub mod transcript;
 
@@ -726,4 +734,44 @@ fn instance_committing_key<'a, C: CurveAffine, P: Params<'a, C>>(
     };
 
     InstanceCommittingKey { bases, constant: Some(w) }
+}
+
+// for tuning the circuit
+#[derive(Serialize, Deserialize)]
+pub struct Halo2VerifierCircuitConfigParams {
+    pub strategy: halo2_ecc::fields::fp::FpStrategy,
+    pub degree: u32,
+    pub num_advice: usize,
+    pub num_lookup_advice: usize,
+    pub num_fixed: usize,
+    pub lookup_bits: usize,
+    pub limb_bits: usize,
+    pub num_limbs: usize,
+}
+
+#[derive(Clone)]
+pub struct Halo2VerifierCircuitConfig {
+    pub base_field_config: halo2_ecc::fields::fp::FpConfig<Fr, Fq>,
+    pub instance: Column<Instance>,
+}
+
+pub fn read_or_create_srs<'a, C: CurveAffine, P: ParamsProver<'a, C>>(
+    k: u32,
+    setup: impl Fn(u32) -> P,
+) -> P {
+    let dir = "./params";
+    let path = format!("{}/kzg_bn254_{}.srs", dir, k);
+    match fs::File::open(path.as_str()) {
+        Ok(mut file) => {
+            println!("read params from {}", path);
+            P::read(&mut file).unwrap()
+        }
+        Err(_) => {
+            println!("creating params for {}", k);
+            fs::create_dir_all(dir).unwrap();
+            let params = setup(k);
+            params.write(&mut fs::File::create(path).unwrap()).unwrap();
+            params
+        }
+    }
 }

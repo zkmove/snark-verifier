@@ -22,14 +22,17 @@ use plonk_verifier::{
         native::NativeLoader,
     },
     pcs::kzg::{Gwc19, Kzg, KzgAs, LimbsEncoding},
-    system::halo2::{compile, transcript::evm::EvmTranscript, Config},
+    system::halo2::{
+        compile, read_or_create_srs, transcript::evm::EvmTranscript, Config,
+        Halo2VerifierCircuitConfig, Halo2VerifierCircuitConfigParams,
+    },
     verifier::{self, PlonkVerifier},
 };
 use rand::rngs::OsRng;
 use std::{io::Cursor, rc::Rc};
 
-const LIMBS: usize = 4;
-const BITS: usize = 68;
+const LIMBS: usize = 3;
+const BITS: usize = 88;
 
 type Pcs = Kzg<Bn256, Gwc19>;
 type As = KzgAs<Pcs>;
@@ -85,17 +88,7 @@ mod application {
                 },
             );
 
-            StandardPlonkConfig {
-                a,
-                b,
-                c,
-                q_a,
-                q_b,
-                q_c,
-                q_ab,
-                constant,
-                instance,
-            }
+            StandardPlonkConfig { a, b, c, q_a, q_b, q_c, q_ab, constant, instance }
         }
     }
 
@@ -170,14 +163,6 @@ mod aggregation {
         plonk::{self, Circuit, ConstraintSystem},
         poly::{commitment::ParamsProver, kzg::commitment::ParamsKZG},
     };
-    use halo2_wrong_ecc::{
-        integer::rns::Rns,
-        maingate::{
-            MainGate, MainGateConfig, MainGateInstructions, RangeChip, RangeConfig,
-            RangeInstructions, RegionCtx,
-        },
-        EccConfig,
-    };
     use halo2_wrong_transcript::NativeRepresentation;
     use itertools::Itertools;
     use plonk_verifier::{
@@ -186,7 +171,7 @@ mod aggregation {
             kzg::{KzgAccumulator, KzgSuccinctVerifyingKey},
             AccumulationScheme, AccumulationSchemeProver,
         },
-        system,
+        system::{self, halo2::Halo2VerifierCircuitConfig},
         util::arithmetic::{fe_to_limbs, FieldExt},
         verifier::PlonkVerifier,
         Protocol,
@@ -225,11 +210,7 @@ mod aggregation {
 
     impl Snark {
         pub fn new(protocol: Protocol<G1Affine>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) -> Self {
-            Self {
-                protocol,
-                instances,
-                proof,
-            }
+            Self { protocol, instances, proof }
         }
     }
 
@@ -282,10 +263,7 @@ mod aggregation {
             instances
                 .iter()
                 .map(|instances| {
-                    instances
-                        .iter()
-                        .map(|instance| loader.assign_scalar(*instance))
-                        .collect_vec()
+                    instances.iter().map(|instance| loader.assign_scalar(*instance)).collect_vec()
                 })
                 .collect_vec()
         };
@@ -310,43 +288,6 @@ mod aggregation {
         };
 
         acccumulator
-    }
-
-    #[derive(Clone)]
-    pub struct AggregationConfig {
-        main_gate_config: MainGateConfig,
-        range_config: RangeConfig,
-    }
-
-    impl AggregationConfig {
-        pub fn configure<F: FieldExt>(
-            meta: &mut ConstraintSystem<F>,
-            composition_bits: Vec<usize>,
-            overflow_bits: Vec<usize>,
-        ) -> Self {
-            let main_gate_config = MainGate::<F>::configure(meta);
-            let range_config =
-                RangeChip::<F>::configure(meta, &main_gate_config, composition_bits, overflow_bits);
-            AggregationConfig {
-                main_gate_config,
-                range_config,
-            }
-        }
-
-        pub fn main_gate(&self) -> MainGate<Fr> {
-            MainGate::new(self.main_gate_config.clone())
-        }
-
-        pub fn range_chip(&self) -> RangeChip<Fr> {
-            RangeChip::new(self.range_config.clone())
-        }
-
-        pub fn ecc_chip(&self) -> BaseFieldEccChip {
-            BaseFieldEccChip::new(EccConfig::new(
-                self.range_config.clone(),
-                self.main_gate_config.clone(),
-            ))
-        }
     }
 
     #[derive(Clone)]
@@ -383,9 +324,8 @@ mod aggregation {
             };
 
             let KzgAccumulator { lhs, rhs } = accumulator;
-            let instances = [lhs.x, lhs.y, rhs.x, rhs.y]
-                .map(fe_to_limbs::<_, _, LIMBS, BITS>)
-                .concat();
+            let instances =
+                [lhs.x, lhs.y, rhs.x, rhs.y].map(fe_to_limbs::<_, _, LIMBS, BITS>).concat();
 
             Self {
                 svk,
@@ -413,28 +353,46 @@ mod aggregation {
     }
 
     impl Circuit<Fr> for AggregationCircuit {
-        type Config = AggregationConfig;
+        type Config = Halo2VerifierCircuitConfig;
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
             Self {
                 svk: self.svk,
-                snarks: self
-                    .snarks
-                    .iter()
-                    .map(SnarkWitness::without_witnesses)
-                    .collect(),
+                snarks: self.snarks.iter().map(SnarkWitness::without_witnesses).collect(),
                 instances: Vec::new(),
                 as_proof: Value::unknown(),
             }
         }
 
         fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
-            AggregationConfig::configure(
+            let path = "./src/configs/verify_circuit_for_evm.config";
+            let params_str =
+                std::fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
+            let params: Halo2VerifierCircuitConfigParams =
+                serde_json::from_str(params_str.as_str()).unwrap();
+
+            assert!(
+                params.limb_bits == BITS && params.num_limbs == LIMBS,
+                "For now we fix limb_bits = {}, otherwise change code",
+                BITS
+            );
+            let base_field_config = FpConfig::configure(
                 meta,
-                vec![BITS / LIMBS],
-                Rns::<Fq, Fr, LIMBS, BITS>::construct().overflow_lengths(),
-            )
+                params.strategy,
+                params.num_advice,
+                params.num_lookup_advice,
+                params.num_fixed,
+                params.lookup_bits,
+                params.limb_bits,
+                params.num_limbs,
+                halo2_ecc::utils::modulus::<Fq>(),
+            );
+
+            let instance = meta.instance_column();
+            meta.enable_equality(instance);
+
+            Self::Config { base_field_config, instance }
         }
 
         fn synthesize(
@@ -442,42 +400,67 @@ mod aggregation {
             config: Self::Config,
             mut layouter: impl Layouter<Fr>,
         ) -> Result<(), plonk::Error> {
-            let main_gate = config.main_gate();
-            let range_chip = config.range_chip();
+            let mut layouter = layouter.namespace(|| "aggregation");
+            config.base_field_config.load_lookup_table(&mut layouter)?;
 
-            range_chip.load_table(&mut layouter)?;
-
-            let (lhs, rhs) = layouter.assign_region(
+            // Need to trick layouter to skip first pass in get shape mode
+            let using_simple_floor_planner = true;
+            let mut first_pass = true;
+            let mut final_pair = None;
+            layouter.assign_region(
                 || "",
                 |region| {
-                    let ctx = RegionCtx::new(region, 0);
+                    if using_simple_floor_planner && first_pass {
+                        first_pass = false;
+                        return Ok(());
+                    }
+                    let ctx = Context::new(
+                        region,
+                        ContextParams {
+                            num_advice: config.base_field_config.range.gate.num_advice,
+                            using_simple_floor_planner,
+                            first_pass,
+                        },
+                    );
 
-                    let ecc_chip = config.ecc_chip();
-                    let loader = Halo2Loader::new(ecc_chip, ctx);
+                    let loader = Halo2Loader::new(&config.base_field_config, ctx);
                     let KzgAccumulator { lhs, rhs } =
-                        aggregate(&self.svk, &loader, &self.snarks, self.as_proof());
+                        accumulate(&self.svk, &loader, &self.snarks, &self.as_vk, self.as_proof());
 
-                    Ok((lhs.assigned(), rhs.assigned()))
+                    // REQUIRED STEP
+                    loader.finalize();
+                    final_pair = Some((lhs.assigned(), rhs.assigned()));
+
+                    Ok(())
                 },
             )?;
-
-            for (limb, row) in iter::empty()
-                .chain(lhs.x().limbs())
-                .chain(lhs.y().limbs())
-                .chain(rhs.x().limbs())
-                .chain(rhs.y().limbs())
-                .zip(0..)
-            {
-                main_gate.expose_public(layouter.namespace(|| ""), limb.into(), row)?;
-            }
-
-            Ok(())
+            let (lhs, rhs) = final_pair.unwrap();
+            Ok({
+                // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
+                let mut layouter = layouter.namespace(|| "expose");
+                for (i, assigned_instance) in lhs
+                    .x
+                    .truncation
+                    .limbs
+                    .iter()
+                    .chain(lhs.y.truncation.limbs.iter())
+                    .chain(rhs.x.truncation.limbs.iter())
+                    .chain(rhs.y.truncation.limbs.iter())
+                    .enumerate()
+                {
+                    layouter.constrain_instance(
+                        assigned_instance.cell().clone(),
+                        config.instance,
+                        i,
+                    )?;
+                }
+            })
         }
     }
 }
 
 fn gen_srs(k: u32) -> ParamsKZG<Bn256> {
-    ParamsKZG::<Bn256>::setup(k, OsRng)
+    read_or_create_srs::<G1Affine, _>(k, |k| ParamsKZG::<Bn256>::setup(k, OsRng))
 }
 
 fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<G1Affine> {
@@ -496,14 +479,9 @@ fn gen_proof<
     circuit: C,
     instances: Vec<Vec<Fr>>,
 ) -> Vec<u8> {
-    MockProver::run(params.k(), &circuit, instances.clone())
-        .unwrap()
-        .assert_satisfied();
+    MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
 
-    let instances = instances
-        .iter()
-        .map(|instances| instances.as_slice())
-        .collect_vec();
+    let instances = instances.iter().map(|instances| instances.as_slice()).collect_vec();
     let proof = {
         let mut transcript = TW::init(Vec::new());
         create_proof::<KZGCommitmentScheme<Bn256>, ProverGWC<_>, _, _, TW, _>(
@@ -589,13 +567,8 @@ fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>)
             .build(Backend::new(MultiFork::new().0, None));
 
         let caller = Address::from_low_u64_be(0xfe);
-        let verifier = evm
-            .deploy(caller, deployment_code.into(), 0.into(), None)
-            .unwrap()
-            .address;
-        let result = evm
-            .call_raw(caller, verifier, calldata.into(), 0.into())
-            .unwrap();
+        let verifier = evm.deploy(caller, deployment_code.into(), 0.into(), None).unwrap().address;
+        let result = evm.call_raw(caller, verifier, calldata.into(), 0.into()).unwrap();
 
         dbg!(result.gas);
 
@@ -604,8 +577,18 @@ fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>)
     assert!(success);
 }
 
+pub fn load_verify_circuit_degree() -> u32 {
+    let path = "./src/configs/verify_circuit_for_evm.config";
+    let params_str =
+        std::fs::read_to_string(path).expect(format!("{} file should exist", path).as_str());
+    let params: Halo2VerifierCircuitConfigParams =
+        serde_json::from_str(params_str.as_str()).unwrap();
+    params.degree
+}
+
 fn main() {
-    let params = gen_srs(22);
+    let k = load_verify_circuit_degree();
+    let params = gen_srs(k);
     let params_app = {
         let mut params = params.clone();
         params.downsize(8);

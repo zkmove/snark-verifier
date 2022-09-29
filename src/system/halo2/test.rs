@@ -1,4 +1,4 @@
-use crate::util::arithmetic::CurveAffine;
+use super::{read_or_create_srs, Halo2VerifierCircuitConfigParams};
 use ark_std::{end_timer, start_timer};
 use halo2_proofs::{
     dev::MockProver,
@@ -10,36 +10,15 @@ use halo2_proofs::{
     transcript::{EncodedChallenge, TranscriptReadBuffer, TranscriptWriterBuffer},
 };
 use rand_chacha::rand_core::RngCore;
-use std::{fs, io::Cursor};
+use std::io::Cursor;
 
 mod kzg;
-
-pub fn read_or_create_srs<'a, C: CurveAffine, P: ParamsProver<'a, C>>(
-    k: u32,
-    setup: impl Fn(u32) -> P,
-) -> P {
-    let dir = "./params";
-    let path = format!("{}/kzg_bn254_{}.params", dir, k);
-    match fs::File::open(path.as_str()) {
-        Ok(mut file) => {
-            println!("read params from {}", path);
-            P::read(&mut file).unwrap()
-        }
-        Err(_) => {
-            println!("creating params for {}", k);
-            fs::create_dir_all(dir).unwrap();
-            let params = setup(k);
-            params.write(&mut fs::File::create(path).unwrap()).unwrap();
-            params
-        }
-    }
-}
 
 pub fn load_verify_circuit_degree() -> u32 {
     let path = "./src/configs/verify_circuit.config";
     let params_str =
         std::fs::read_to_string(path).expect(format!("{} file should exist", path).as_str());
-    let params: kzg::halo2::Halo2VerifierCircuitConfigParams =
+    let params: Halo2VerifierCircuitConfigParams =
         serde_json::from_str(params_str.as_str()).unwrap();
     params.degree
 }
@@ -64,7 +43,6 @@ where
     EC: EncodedChallenge<S::Curve>,
     R: RngCore,
 {
-    /*
     let mock_time = start_timer!(|| "mock prover");
     for (circuit, instances) in circuits.iter().zip(instances.iter()) {
         MockProver::run(
@@ -76,7 +54,6 @@ where
         .assert_satisfied();
     }
     end_timer!(mock_time);
-    */
 
     let proof_time = start_timer!(|| "create proof");
     let proof = {
@@ -109,7 +86,6 @@ where
 macro_rules! halo2_prepare {
     ($dir:expr, $k:expr, $setup:expr, $config:expr, $create_circuit:expr) => {{
         use halo2_proofs::plonk::{keygen_pk, keygen_vk};
-        use std::iter;
         use $crate::{
             system::halo2::{compile, test::read_or_create_srs},
             util::{Itertools},
