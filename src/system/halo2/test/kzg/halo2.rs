@@ -523,7 +523,7 @@ pub mod zkevm {
         const NAME: &'static str = "state-circuit";
 
         fn default_circuit() -> Self {
-            StateCircuit::<Fr>::new(Fr::default(), RwMap::default(), 1 << 16)
+            StateCircuit::<Fr>::new(Fr::default(), RwMap::default(), 1)
         }
         fn instances(&self) -> Vec<Vec<Fr>> {
             self.instance()
