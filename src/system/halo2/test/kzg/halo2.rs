@@ -459,7 +459,6 @@ pub fn create_snark<T: TargetCircuit>() -> (ParamsKZG<Bn256>, Snark<G1Affine>) {
     };
     end_timer!(proof_time);
 
-    println!("{:#?}", pk.get_vk().cs());
     let verify_time = start_timer!(|| "verify proof");
     {
         let verifier_params = params.verifier_params();

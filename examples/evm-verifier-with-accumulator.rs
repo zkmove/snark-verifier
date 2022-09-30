@@ -1,3 +1,4 @@
+use ark_std::{end_timer, start_timer};
 use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
@@ -22,10 +23,7 @@ use plonk_verifier::{
         native::NativeLoader,
     },
     pcs::kzg::{Gwc19, Kzg, KzgAs, LimbsEncoding},
-    system::halo2::{
-        compile, read_or_create_srs, transcript::evm::EvmTranscript, Config,
-        Halo2VerifierCircuitConfig, Halo2VerifierCircuitConfigParams,
-    },
+    system::halo2::{compile, read_or_create_srs, transcript::evm::EvmTranscript, Config},
     verifier::{self, PlonkVerifier},
 };
 use rand::rngs::OsRng;
@@ -158,12 +156,15 @@ mod application {
 mod aggregation {
     use super::{As, Plonk, BITS, LIMBS};
     use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
+    use halo2_ecc::{
+        fields::fp::FpConfig,
+        gates::{Context, ContextParams},
+    };
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},
-        plonk::{self, Circuit, ConstraintSystem},
+        plonk::{self, Circuit},
         poly::{commitment::ParamsProver, kzg::commitment::ParamsKZG},
     };
-    use halo2_wrong_transcript::NativeRepresentation;
     use itertools::Itertools;
     use plonk_verifier::{
         loader::{self, native::NativeLoader},
@@ -171,13 +172,16 @@ mod aggregation {
             kzg::{KzgAccumulator, KzgSuccinctVerifyingKey},
             AccumulationScheme, AccumulationSchemeProver,
         },
-        system::{self, halo2::Halo2VerifierCircuitConfig},
-        util::arithmetic::{fe_to_limbs, FieldExt},
+        system::{
+            self,
+            halo2::{Halo2VerifierCircuitConfig, Halo2VerifierCircuitConfigParams},
+        },
+        util::arithmetic::fe_to_limbs,
         verifier::PlonkVerifier,
         Protocol,
     };
     use rand::rngs::OsRng;
-    use std::{iter, rc::Rc};
+    use std::rc::Rc;
 
     const T: usize = 5;
     const RATE: usize = 4;
@@ -185,22 +189,10 @@ mod aggregation {
     const R_P: usize = 60;
 
     type Svk = KzgSuccinctVerifyingKey<G1Affine>;
-    type BaseFieldEccChip = halo2_wrong_ecc::BaseFieldEccChip<G1Affine, LIMBS, BITS>;
-    type Halo2Loader<'a> = loader::halo2::Halo2Loader<'a, G1Affine, Fr, BaseFieldEccChip>;
-    pub type PoseidonTranscript<L, S, B> = system::halo2::transcript::halo2::PoseidonTranscript<
-        G1Affine,
-        Fr,
-        NativeRepresentation,
-        L,
-        S,
-        B,
-        LIMBS,
-        BITS,
-        T,
-        RATE,
-        R_F,
-        R_P,
-    >;
+
+    type Halo2Loader<'a, 'b> = loader::halo2::Halo2Loader<'a, 'b, G1Affine>;
+    pub type PoseidonTranscript<L, S, B> =
+        system::halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, B, T, RATE, R_F, R_P>;
 
     pub struct Snark {
         protocol: Protocol<G1Affine>,
@@ -253,12 +245,12 @@ mod aggregation {
         }
     }
 
-    pub fn aggregate<'a>(
+    pub fn aggregate<'a, 'b>(
         svk: &Svk,
-        loader: &Rc<Halo2Loader<'a>>,
+        loader: &Rc<Halo2Loader<'a, 'b>>,
         snarks: &[SnarkWitness],
         as_proof: Value<&'_ [u8]>,
-    ) -> KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>> {
+    ) -> KzgAccumulator<G1Affine, Rc<Halo2Loader<'a, 'b>>> {
         let assign_instances = |instances: &[Vec<Value<Fr>>]| {
             instances
                 .iter()
@@ -425,7 +417,7 @@ mod aggregation {
 
                     let loader = Halo2Loader::new(&config.base_field_config, ctx);
                     let KzgAccumulator { lhs, rhs } =
-                        accumulate(&self.svk, &loader, &self.snarks, &self.as_vk, self.as_proof());
+                        aggregate(&self.svk, &loader, &self.snarks, self.as_proof());
 
                     // REQUIRED STEP
                     loader.finalize();
@@ -581,7 +573,7 @@ pub fn load_verify_circuit_degree() -> u32 {
     let path = "./src/configs/verify_circuit_for_evm.config";
     let params_str =
         std::fs::read_to_string(path).expect(format!("{} file should exist", path).as_str());
-    let params: Halo2VerifierCircuitConfigParams =
+    let params: plonk_verifier::system::halo2::Halo2VerifierCircuitConfigParams =
         serde_json::from_str(params_str.as_str()).unwrap();
     params.degree
 }
@@ -597,19 +589,30 @@ fn main() {
 
     let snarks = [(); 3].map(|_| gen_application_snark(&params_app));
     let agg_circuit = aggregation::AggregationCircuit::new(&params, snarks);
+    println!("finished creating agg_circuit");
+    let pk_time = start_timer!(|| "agg_circuit vk & pk time");
     let pk = gen_pk(&params, &agg_circuit);
+    end_timer!(pk_time);
+
+    let deploy_time = start_timer!(|| "generate aggregation evm verifier code");
     let deployment_code = gen_aggregation_evm_verifier(
         &params,
         pk.get_vk(),
         aggregation::AggregationCircuit::num_instance(),
         aggregation::AggregationCircuit::accumulator_indices(),
     );
+    end_timer!(deploy_time);
 
+    let proof_time = start_timer!(|| "create agg_circuit proof");
     let proof = gen_proof::<_, _, EvmTranscript<G1Affine, _, _, _>, EvmTranscript<G1Affine, _, _, _>>(
         &params,
         &pk,
         agg_circuit.clone(),
         agg_circuit.instances(),
     );
+    end_timer!(proof_time);
+
+    let verify_time = start_timer!(|| "on-chain verification");
     evm_verify(deployment_code, agg_circuit.instances(), proof);
+    end_timer!(verify_time);
 }

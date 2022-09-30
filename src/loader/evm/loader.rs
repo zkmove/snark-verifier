@@ -86,15 +86,7 @@ impl EvmLoader {
     pub fn runtime_code(self: &Rc<Self>) -> Vec<u8> {
         let mut code = self.code.borrow().clone();
         let dst = code.len() + 9;
-        code.push(dst)
-            .jumpi()
-            .push(0)
-            .push(0)
-            .revert()
-            .jumpdest()
-            .stop()
-            .to_owned()
-            .into()
+        code.push(dst).jumpi().push(0).push(0).revert().jumpdest().stop().to_owned().into()
     }
 
     pub fn allocate(self: &Rc<Self>, size: usize) -> usize {
@@ -116,10 +108,7 @@ impl EvmLoader {
     }
 
     pub(crate) fn scalar(self: &Rc<Self>, value: Value<U256>) -> Scalar {
-        let value = if matches!(
-            value,
-            Value::Constant(_) | Value::Memory(_) | Value::Negated(_)
-        ) {
+        let value = if matches!(value, Value::Constant(_) | Value::Memory(_) | Value::Negated(_)) {
             value
         } else {
             let identifier = value.identifier();
@@ -127,10 +116,7 @@ impl EvmLoader {
             let ptr = if let Some(ptr) = some_ptr {
                 ptr
             } else {
-                self.push(&Scalar {
-                    loader: self.clone(),
-                    value,
-                });
+                self.push(&Scalar { loader: self.clone(), value });
                 let ptr = self.allocate(0x20);
                 self.code.borrow_mut().push(ptr).mstore();
                 self.cache.borrow_mut().insert(identifier, ptr);
@@ -138,17 +124,11 @@ impl EvmLoader {
             };
             Value::Memory(ptr)
         };
-        Scalar {
-            loader: self.clone(),
-            value,
-        }
+        Scalar { loader: self.clone(), value }
     }
 
     fn ec_point(self: &Rc<Self>, value: Value<(U256, U256)>) -> EcPoint {
-        EcPoint {
-            loader: self.clone(),
-            value,
-        }
+        EcPoint { loader: self.clone(), value }
     }
 
     fn push(self: &Rc<Self>, scalar: &Scalar) {
@@ -331,13 +311,7 @@ impl EvmLoader {
 
     pub fn keccak256(self: &Rc<Self>, ptr: usize, len: usize) -> usize {
         let hash_ptr = self.allocate(0x20);
-        self.code
-            .borrow_mut()
-            .push(len)
-            .push(ptr)
-            .keccak256()
-            .push(hash_ptr)
-            .mstore();
+        self.code.borrow_mut().push(len).push(ptr).keccak256().push(hash_ptr).mstore();
         hash_ptr
     }
 
@@ -356,14 +330,7 @@ impl EvmLoader {
         let ptr = self.allocate(0x40);
         match value.value {
             Value::Constant((x, y)) => {
-                self.code
-                    .borrow_mut()
-                    .push(x)
-                    .push(ptr)
-                    .mstore()
-                    .push(y)
-                    .push(ptr + 0x20)
-                    .mstore();
+                self.code.borrow_mut().push(x).push(ptr).mstore().push(y).push(ptr + 0x20).mstore();
             }
             Value::Memory(src_ptr) => {
                 self.code
@@ -481,10 +448,7 @@ impl EvmLoader {
             return self.scalar(Value::Constant(out.try_into().unwrap()));
         }
 
-        self.scalar(Value::Sum(
-            Box::new(lhs.value.clone()),
-            Box::new(rhs.value.clone()),
-        ))
+        self.scalar(Value::Sum(Box::new(lhs.value.clone()), Box::new(rhs.value.clone())))
     }
 
     fn sub(self: &Rc<Self>, lhs: &Scalar, rhs: &Scalar) -> Scalar {
@@ -504,10 +468,7 @@ impl EvmLoader {
             return self.scalar(Value::Constant(out.try_into().unwrap()));
         }
 
-        self.scalar(Value::Product(
-            Box::new(lhs.value.clone()),
-            Box::new(rhs.value.clone()),
-        ))
+        self.scalar(Value::Product(Box::new(lhs.value.clone()), Box::new(rhs.value.clone())))
     }
 
     fn neg(self: &Rc<Self>, scalar: &Scalar) -> Scalar {
@@ -522,24 +483,12 @@ impl EvmLoader {
 #[cfg(test)]
 impl EvmLoader {
     fn start_gas_metering(self: &Rc<Self>, identifier: &str) {
-        self.gas_metering_ids
-            .borrow_mut()
-            .push(identifier.to_string());
+        self.gas_metering_ids.borrow_mut().push(identifier.to_string());
         self.code.borrow_mut().gas().swap(1);
     }
 
     fn end_gas_metering(self: &Rc<Self>) {
-        self.code
-            .borrow_mut()
-            .swap(1)
-            .push(9)
-            .gas()
-            .swap(2)
-            .sub()
-            .sub()
-            .push(0)
-            .push(0)
-            .log1();
+        self.code.borrow_mut().swap(1).push(9).gas().swap(2).sub().sub().push(0).push(0).log1();
     }
 
     pub fn print_gas_metering(self: &Rc<Self>, costs: Vec<u64>) {
@@ -574,9 +523,7 @@ impl EcPoint {
 
 impl Debug for EcPoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EcPoint")
-            .field("value", &self.value)
-            .finish()
+        f.debug_struct("EcPoint").field("value", &self.value).finish()
     }
 }
 
@@ -631,21 +578,14 @@ impl Scalar {
     pub(crate) fn ptr(&self) -> usize {
         match self.value {
             Value::Memory(ptr) => ptr,
-            _ => *self
-                .loader
-                .cache
-                .borrow()
-                .get(&self.value.identifier())
-                .unwrap(),
+            _ => *self.loader.cache.borrow().get(&self.value.identifier()).unwrap(),
         }
     }
 }
 
 impl Debug for Scalar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Scalar")
-            .field("value", &self.value)
-            .finish()
+        f.debug_struct("Scalar").field("value", &self.value).finish()
     }
 }
 
@@ -760,6 +700,14 @@ impl<F: PrimeField<Repr = [u8; 0x20]>> LoadedScalar<F> for Scalar {
         &self.loader
     }
 
+    fn mul_add(a: &Self, b: &Self, c: &Self) -> Self {
+        a.clone() * b + c
+    }
+
+    fn mul_add_constant(a: &Self, b: &Self, c: &F) -> Self {
+        a.clone() * b + a.loader().load_const(c)
+    }
+
     fn batch_invert<'a>(values: impl IntoIterator<Item = &'a mut Self>) {
         let values = values.into_iter().collect_vec();
         let loader = &values.first().unwrap().loader;
@@ -794,14 +742,9 @@ impl<F: PrimeField<Repr = [u8; 0x20]>> LoadedScalar<F> for Scalar {
         }
 
         loader.push(&inv);
-        for (value, product) in values.iter().rev().zip(
-            products
-                .iter()
-                .rev()
-                .skip(1)
-                .map(Some)
-                .chain(iter::once(None)),
-        ) {
+        for (value, product) in
+            values.iter().rev().zip(products.iter().rev().skip(1).map(Some).chain(iter::once(None)))
+        {
             if let Some(product) = product {
                 loader.push(value);
                 loader
@@ -864,9 +807,9 @@ impl<F: PrimeField<Repr = [u8; 0x20]>> ScalarLoader<F> for Rc<EvmLoader> {
                     self.push(value);
                 }
                 (false, Value::Constant(value)) => {
-                    self.push(&self.scalar(Value::Constant(fe_to_u256(
-                        *coeff * u256_to_fe::<F>(*value),
-                    ))));
+                    self.push(
+                        &self.scalar(Value::Constant(fe_to_u256(*coeff * u256_to_fe::<F>(*value)))),
+                    );
                 }
                 (false, _) => {
                     self.code.borrow_mut().push(self.scalar_modulus);
@@ -915,39 +858,40 @@ impl<F: PrimeField<Repr = [u8; 0x20]>> ScalarLoader<F> for Rc<EvmLoader> {
             return self.load_const(&constant);
         }
 
-        let push_addend = |(coeff, lhs, rhs): &(F, &Scalar, &Scalar)| {
-            assert_ne!(*coeff, F::zero());
-            match (*coeff == F::one(), &lhs.value, &rhs.value) {
-                (_, Value::Constant(lhs), Value::Constant(rhs)) => {
-                    self.push(&self.scalar(Value::Constant(fe_to_u256(
-                        *coeff * u256_to_fe::<F>(*lhs) * u256_to_fe::<F>(*rhs),
-                    ))));
+        let push_addend =
+            |(coeff, lhs, rhs): &(F, &Scalar, &Scalar)| {
+                assert_ne!(*coeff, F::zero());
+                match (*coeff == F::one(), &lhs.value, &rhs.value) {
+                    (_, Value::Constant(lhs), Value::Constant(rhs)) => {
+                        self.push(&self.scalar(Value::Constant(fe_to_u256(
+                            *coeff * u256_to_fe::<F>(*lhs) * u256_to_fe::<F>(*rhs),
+                        ))));
+                    }
+                    (_, value @ Value::Memory(_), Value::Constant(constant))
+                    | (_, Value::Constant(constant), value @ Value::Memory(_)) => {
+                        self.code.borrow_mut().push(self.scalar_modulus);
+                        self.push(&self.scalar(Value::Constant(fe_to_u256(
+                            *coeff * u256_to_fe::<F>(*constant),
+                        ))));
+                        self.push(&self.scalar(value.clone()));
+                        self.code.borrow_mut().mulmod();
+                    }
+                    (true, _, _) => {
+                        self.code.borrow_mut().push(self.scalar_modulus);
+                        self.push(lhs);
+                        self.push(rhs);
+                        self.code.borrow_mut().mulmod();
+                    }
+                    (false, _, _) => {
+                        self.code.borrow_mut().push(self.scalar_modulus).dup(0);
+                        self.push(&self.scalar(Value::Constant(fe_to_u256(*coeff))));
+                        self.push(lhs);
+                        self.code.borrow_mut().mulmod();
+                        self.push(rhs);
+                        self.code.borrow_mut().mulmod();
+                    }
                 }
-                (_, value @ Value::Memory(_), Value::Constant(constant))
-                | (_, Value::Constant(constant), value @ Value::Memory(_)) => {
-                    self.code.borrow_mut().push(self.scalar_modulus);
-                    self.push(&self.scalar(Value::Constant(fe_to_u256(
-                        *coeff * u256_to_fe::<F>(*constant),
-                    ))));
-                    self.push(&self.scalar(value.clone()));
-                    self.code.borrow_mut().mulmod();
-                }
-                (true, _, _) => {
-                    self.code.borrow_mut().push(self.scalar_modulus);
-                    self.push(lhs);
-                    self.push(rhs);
-                    self.code.borrow_mut().mulmod();
-                }
-                (false, _, _) => {
-                    self.code.borrow_mut().push(self.scalar_modulus).dup(0);
-                    self.push(&self.scalar(Value::Constant(fe_to_u256(*coeff))));
-                    self.push(lhs);
-                    self.code.borrow_mut().mulmod();
-                    self.push(rhs);
-                    self.code.borrow_mut().mulmod();
-                }
-            }
-        };
+            };
 
         let mut values = values.iter();
         if constant == F::zero() {

@@ -39,7 +39,7 @@ zkevm_circuit_benchmarks = {git = "https://github.com/privacy-scaling-exploratio
 zkevm_circuits = {git = "https://github.com/privacy-scaling-explorations/zkevm-circuits.git", package = "zkevm-circuits" }
 
 [features]
-default = ["loader_halo2", "system_halo2"]
+default = ["loader_evm", "loader_halo2", "system_halo2"]
 
 loader_evm = ["dep:ethereum_types", "dep:sha3"]
 loader_halo2 = ["dep:halo2_proofs", "dep:halo2_ecc", "dep:poseidon"]
