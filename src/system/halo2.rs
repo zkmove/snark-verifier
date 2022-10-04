@@ -23,6 +23,7 @@ use halo2_proofs::{
 use serde::{Deserialize, Serialize};
 use std::{fs, io, iter, mem::size_of};
 
+pub mod aggregation;
 pub mod transcript;
 
 pub const LIMBS: usize = 3;

@@ -1,10 +1,9 @@
 use super::{read_or_create_srs, Halo2VerifierCircuitConfigParams};
 use ark_std::{end_timer, start_timer};
 use halo2_proofs::{
-    dev::MockProver,
     plonk::{create_proof, verify_proof, Circuit, ProvingKey},
     poly::{
-        commitment::{CommitmentScheme, Params, ParamsProver, Prover, Verifier},
+        commitment::{CommitmentScheme, ParamsProver, Prover, Verifier},
         VerificationStrategy,
     },
     transcript::{EncodedChallenge, TranscriptReadBuffer, TranscriptWriterBuffer},
@@ -43,18 +42,6 @@ where
     EC: EncodedChallenge<S::Curve>,
     R: RngCore,
 {
-    let mock_time = start_timer!(|| "mock prover");
-    for (circuit, instances) in circuits.iter().zip(instances.iter()) {
-        MockProver::run(
-            params.k(),
-            circuit,
-            instances.iter().map(|instance| instance.to_vec()).collect(),
-        )
-        .unwrap()
-        .assert_satisfied();
-    }
-    end_timer!(mock_time);
-
     let proof_time = start_timer!(|| "create proof");
     let proof = {
         let mut transcript = TW::init(Vec::new());
@@ -85,7 +72,7 @@ where
 
 macro_rules! halo2_prepare {
     ($dir:expr, $k:expr, $setup:expr, $config:expr, $create_circuit:expr) => {{
-        use halo2_proofs::plonk::{keygen_pk, keygen_vk};
+        use halo2_proofs::{plonk::{keygen_pk, keygen_vk}};
         use $crate::{
             system::halo2::{compile, test::read_or_create_srs},
             util::{Itertools},
@@ -93,6 +80,22 @@ macro_rules! halo2_prepare {
         use ark_std::{start_timer, end_timer};
 
         let circuits = (0..$config.num_proof).map(|_| $create_circuit).collect_vec();
+
+        /*
+        let mock_time = start_timer!(|| "mock prover");
+        let instances = circuits.iter().map(|circuit| circuit.instances()).collect_vec();
+
+        for (circuit, instance) in circuits.iter().zip(instances.iter()) {
+            MockProver::run(
+                $k,
+                circuit,
+                instance.clone(),
+            )
+            .unwrap()
+            .assert_satisfied();
+        }
+        end_timer!(mock_time);
+        */
 
         let params = read_or_create_srs($k, $setup);
 

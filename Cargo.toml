@@ -13,6 +13,8 @@ rand_chacha = "0.3.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json  = "1.0"
 halo2_curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", tag = "0.2.1", package = "halo2curves" }
+ark-std = { version = "0.3", features = ["print-trace"] }
+hex = "0.4.3"
 
 # system_halo2
 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v2022_09_10", optional = true }
@@ -20,17 +22,19 @@ halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", 
 # loader_evm
 ethereum_types = { package = "ethereum-types", version = "0.13.1", default-features = false, features = ["std"], optional = true }
 sha3 = { version = "0.10.1", optional = true }
+foundry_evm = { git = "https://github.com/jonathanpwang/foundry", package = "foundry-evm", branch = "fix/pin-revm-to-rev", optional = true }
 
 # loader_halo2
 halo2_ecc = { git = "https://github.com/jonathanpwang/halo2-ecc", branch = "value", default-features = false, optional = true }
 poseidon = { git = "https://github.com/privacy-scaling-explorations/poseidon", branch = "padding", optional = true }
 
+# test
+halo2_mpt = { git = "https://github.com/yi-sun/halo2-mpt.git", package = "halo2-mpt", branch = "plonk-verifier" }
+
 [dev-dependencies]
 paste = "1.0.7"
-ark-std = { version = "0.3", features = ["print-trace"] }
 
 # loader_evm
-foundry_evm = { git = "https://github.com/jonathanpwang/foundry", package = "foundry-evm", branch = "fix/pin-revm-to-rev" }
 crossterm = { version = "0.22.1" }
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 
@@ -40,8 +44,7 @@ zkevm_circuits = {git = "https://github.com/privacy-scaling-explorations/zkevm-c
 
 [features]
 default = ["loader_evm", "loader_halo2", "system_halo2"]
-
-loader_evm = ["dep:ethereum_types", "dep:sha3"]
+loader_evm = ["dep:ethereum_types", "dep:sha3", "dep:foundry_evm"]
 loader_halo2 = ["dep:halo2_proofs", "dep:halo2_ecc", "dep:poseidon"]
 
 system_halo2 = ["dep:halo2_proofs"]
