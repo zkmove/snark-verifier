@@ -247,8 +247,9 @@ impl AggregationCircuit {
         (0..4 * LIMBS).map(|idx| (0, idx)).collect()
     }
 
-    pub fn num_instance() -> Vec<usize> {
-        vec![4 * LIMBS]
+    pub fn num_instance(&self) -> Vec<usize> {
+        dbg!(self.instances.len());
+        vec![self.instances.len()]
     }
 
     pub fn instances(&self) -> Vec<Vec<Fr>> {
@@ -439,7 +440,6 @@ pub trait TargetCircuit {
     const PUBLIC_INPUT_SIZE: usize;
     const N_PROOFS: usize;
     const NAME: &'static str;
-    const READABLE_VKEY: bool; // if circuit has selector optimization, then currently can't read vkey from cache... Nalin's PR fixes this
 
     type Circuit: Circuit<Fr>;
 

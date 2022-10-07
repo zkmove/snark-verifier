@@ -188,7 +188,7 @@ fn main() {
     let deployment_code = gen_aggregation_evm_verifier(
         &params,
         pk.get_vk(),
-        aggregation::AggregationCircuit::num_instance(),
+        agg_circuit.num_instance(),
         aggregation::AggregationCircuit::accumulator_indices(),
     );
     end_timer!(deploy_time);

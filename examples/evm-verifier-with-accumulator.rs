@@ -4,8 +4,7 @@ use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
 use halo2_proofs::{
-    dev::MockProver,
-    plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey, VerifyingKey},
+    plonk::{create_proof, verify_proof, Circuit, ProvingKey, VerifyingKey},
     poly::{
         commitment::{Params, ParamsProver},
         kzg::{
@@ -23,10 +22,11 @@ use plonk_verifier::{
         evm::{encode_calldata, EvmLoader},
         native::NativeLoader,
     },
-    pcs::kzg::{Gwc19, Kzg, KzgAs, LimbsEncoding},
+    pcs::kzg::{Gwc19, Kzg, LimbsEncoding},
     system::halo2::{
         aggregation::{
-            self, gen_pk, gen_srs, write_bytes, AggregationCircuit, Snark, TargetCircuit,
+            self, create_snark_shplonk, gen_pk, gen_srs, write_bytes, AggregationCircuit, Snark,
+            TargetCircuit,
         },
         compile,
         transcript::evm::EvmTranscript,
@@ -99,7 +99,7 @@ mod application {
     }
 
     #[derive(Clone, Default)]
-    pub struct StandardPlonk(Fr);
+    pub struct StandardPlonk(pub Fr);
 
     impl StandardPlonk {
         pub fn rand<R: RngCore>(mut rng: R) -> Self {
@@ -207,25 +207,6 @@ fn gen_proof<
     proof
 }
 
-fn gen_application_snark(params: &ParamsKZG<Bn256>) -> Snark {
-    let circuit = application::StandardPlonk::rand(OsRng);
-
-    let pk = gen_pk(params, &circuit);
-    let protocol = compile(
-        params,
-        pk.get_vk(),
-        Config::kzg().with_num_instance(application::StandardPlonk::num_instance()),
-    );
-
-    let proof = gen_proof::<
-        _,
-        _,
-        aggregation::PoseidonTranscript<NativeLoader, _, _>,
-        aggregation::PoseidonTranscript<NativeLoader, _, _>,
-    >(params, &pk, circuit.clone(), circuit.instances());
-    Snark::new(protocol, circuit.instances(), proof)
-}
-
 fn gen_aggregation_evm_verifier(
     params: &ParamsKZG<Bn256>,
     vk: &VerifyingKey<G1Affine>,
@@ -287,7 +268,6 @@ impl TargetCircuit for StandardPlonk {
     const PUBLIC_INPUT_SIZE: usize = 1;
     const N_PROOFS: usize = 1;
     const NAME: &'static str = "standard_plonk";
-    const READABLE_VKEY: bool = true;
 
     type Circuit = Self;
     fn default_circuit() -> Self::Circuit {
@@ -299,15 +279,17 @@ impl TargetCircuit for StandardPlonk {
 }
 
 fn main() {
+    let app_circuit = StandardPlonk::rand(OsRng);
+    let (_, snark) = create_snark_shplonk::<StandardPlonk>(
+        vec![app_circuit.clone()],
+        vec![vec![vec![app_circuit.0]]],
+        None,
+    );
+    let snarks = vec![snark];
+
     let k = load_verify_circuit_degree();
     let params = gen_srs(k);
-    let params_app = {
-        let mut params = params.clone();
-        params.downsize(8);
-        params
-    };
 
-    let snarks = [(); StandardPlonk::N_PROOFS].map(|_| gen_application_snark(&params_app));
     let agg_circuit = AggregationCircuit::new(&params, snarks, true);
     let pk_time = start_timer!(|| "agg_circuit vk & pk time");
     let pk = gen_pk(&params, &agg_circuit);
@@ -317,14 +299,20 @@ fn main() {
     let deployment_code = gen_aggregation_evm_verifier(
         &params,
         pk.get_vk(),
-        AggregationCircuit::num_instance(),
+        agg_circuit.num_instance(),
         AggregationCircuit::accumulator_indices(),
     );
     end_timer!(deploy_time);
     write_bytes("./data/verifier_bytecode.dat", &deployment_code);
 
     // use different input snarks to test instances etc
-    let snarks = [(); StandardPlonk::N_PROOFS].map(|_| gen_application_snark(&params_app));
+    let app_circuit = StandardPlonk::rand(OsRng);
+    let (_, snark) = create_snark_shplonk::<StandardPlonk>(
+        vec![app_circuit.clone()],
+        vec![vec![vec![app_circuit.0]]],
+        None,
+    );
+    let snarks = vec![snark];
     let agg_circuit = AggregationCircuit::new(&params, snarks, true);
     let proof_time = start_timer!(|| "create agg_circuit proof");
     let proof = gen_proof::<_, _, EvmTranscript<G1Affine, _, _, _>, EvmTranscript<G1Affine, _, _, _>>(
