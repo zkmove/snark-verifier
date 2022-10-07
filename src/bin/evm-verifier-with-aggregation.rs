@@ -23,7 +23,7 @@ use plonk_verifier::{
     loader::evm::{encode_calldata, EvmLoader},
     pcs::kzg::{Gwc19, Kzg, LimbsEncoding},
     system::halo2::{
-        aggregation::{self, create_snark_shplonk, gen_pk, gen_srs},
+        aggregation::{self, create_snark_shplonk, gen_pk, gen_srs, TargetCircuit},
         compile,
         transcript::evm::EvmTranscript,
         Config, BITS, LIMBS,
@@ -143,6 +143,7 @@ impl aggregation::TargetCircuit for EthBlockHeaderCircuit {
     const PUBLIC_INPUT_SIZE: usize = 0; //(Self::TARGET_CIRCUIT_K * 2) as usize;
     const N_PROOFS: usize = 1;
     const NAME: &'static str = "eth";
+    const READABLE_VKEY: bool = true;
 
     type Circuit = EthBlockHeaderTestCircuit<Fr>;
     fn default_circuit() -> Self::Circuit {
@@ -159,10 +160,21 @@ impl aggregation::TargetCircuit for EthBlockHeaderCircuit {
     }
 }
 
+fn default_circuits<T: TargetCircuit>() -> Vec<T::Circuit> {
+    (0..T::N_PROOFS).map(|_| T::default_circuit()).collect_vec()
+}
+fn default_instances<T: TargetCircuit>() -> Vec<Vec<Vec<Fr>>> {
+    (0..T::N_PROOFS).map(|_| T::instances()).collect_vec()
+}
+
 fn main() {
-    let (params_app, snark) = create_snark_shplonk::<EthBlockHeaderCircuit>(None);
+    let (params_app, snark) = create_snark_shplonk::<EthBlockHeaderCircuit>(
+        default_circuits::<EthBlockHeaderCircuit>(),
+        default_instances::<EthBlockHeaderCircuit>(),
+        None,
+    );
     let snarks = vec![snark];
-    let agg_circuit = aggregation::AggregationCircuit::new(&params_app, snarks);
+    let agg_circuit = aggregation::AggregationCircuit::new(&params_app, snarks, true);
     println!("finished creating agg_circuit");
 
     let k = load_aggregation_circuit_degree();
