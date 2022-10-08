@@ -35,7 +35,7 @@ use plonk_verifier::{
     verifier::{self, PlonkVerifier},
 };
 use rand::rngs::OsRng;
-use std::{io::Cursor, rc::Rc};
+use std::{fs, io::Cursor, rc::Rc};
 
 const LIMBS: usize = 3;
 const BITS: usize = 88;
@@ -235,7 +235,7 @@ fn gen_aggregation_evm_verifier(
 
 fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) {
     let calldata = encode_calldata(&instances, &proof);
-    write_bytes("./data/verifier_calldata.dat", &calldata);
+    fs::write("./data/verifier_calldata.dat", hex::encode(&calldata)).unwrap();
     let success = {
         let mut evm = ExecutorBuilder::default()
             .with_gas_limit(u64::MAX.into())
@@ -301,7 +301,7 @@ fn main() {
         AggregationCircuit::accumulator_indices(),
     );
     end_timer!(deploy_time);
-    write_bytes("./data/verifier_bytecode.dat", &deployment_code);
+    fs::write("./data/verifier_bytecode.dat", hex::encode(&deployment_code)).unwrap();
 
     // use different input snarks to test instances etc
     let app_circuit = StandardPlonk::rand(OsRng);
