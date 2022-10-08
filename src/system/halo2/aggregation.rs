@@ -520,15 +520,18 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     let proof = {
         let path = format!("./data/proof_{}_{}.dat", T::NAME, params.k());
         let instance_path = format!("./data/instances_{}_{}.dat", T::NAME, params.k());
-        if let Some(cached_instances) = read_instances::<T>(instance_path.as_str()) && Path::new(path.as_str()).exists() && cached_instances == instances {
+        let cached_instances = read_instances::<T>(instance_path.as_str());
+        if cached_instances.is_some()
+            && Path::new(path.as_str()).exists()
+            && cached_instances.unwrap() == instances
+        {
             let mut file = File::open(path.as_str()).unwrap();
             let mut buf = vec![];
             file.read_to_end(&mut buf).unwrap();
             buf
         } else {
             let proof_time = start_timer!(|| "create proof");
-            let mut transcript =
-                PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
+            let mut transcript = PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
             create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, ChallengeScalar<_>, _, _, _>(
                 &params,
                 &pk,
