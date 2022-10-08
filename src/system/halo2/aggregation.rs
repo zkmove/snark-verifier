@@ -34,7 +34,7 @@ use halo2_proofs::{
         self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey, VerifyingKey,
     },
     poly::{
-        commitment::ParamsProver,
+        commitment::{Params, ParamsProver},
         kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::{ProverSHPLONK, VerifierSHPLONK},
@@ -375,7 +375,7 @@ pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
     circuit: &ConcreteCircuit,
     name: &str,
 ) -> VerifyingKey<G1Affine> {
-    let path = format!("./data/{}.vkey", name);
+    let path = format!("./data/{}_{}.vkey", name, params.k());
     match File::open(path.as_str()) {
         Ok(f) => {
             println!("Reading vkey from {}", path);
@@ -400,7 +400,7 @@ pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
     circuit: &ConcreteCircuit,
     name: &str,
 ) -> ProvingKey<G1Affine> {
-    let path = format!("./data/{}.pkey", name);
+    let path = format!("./data/{}_{}.pkey", name, params.k());
     match File::open(path.as_str()) {
         Ok(f) => {
             println!("Reading pkey from {}", path);
@@ -518,8 +518,8 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     // TODO: need to cache the instances as well!
 
     let proof = {
-        let path = format!("./data/proof_{}.dat", T::NAME);
-        let instance_path = format!("./data/instances_{}.dat", T::NAME);
+        let path = format!("./data/proof_{}_{}.dat", T::NAME, params.k());
+        let instance_path = format!("./data/instances_{}_{}.dat", T::NAME, params.k());
         if let Some(cached_instances) = read_instances::<T>(instance_path.as_str()) && Path::new(path.as_str()).exists() && cached_instances == instances {
             let mut file = File::open(path.as_str()).unwrap();
             let mut buf = vec![];

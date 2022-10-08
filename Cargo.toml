@@ -28,9 +28,6 @@ foundry_evm = { git = "https://github.com/jonathanpwang/foundry", package = "fou
 halo2_ecc = { git = "https://github.com/jonathanpwang/halo2-ecc", tag = "v2022_09_29", default-features = false, optional = true }
 poseidon = { git = "https://github.com/privacy-scaling-explorations/poseidon", branch = "padding", optional = true }
 
-# test
-halo2_mpt = { git = "https://github.com/yi-sun/halo2-mpt.git", package = "halo2-mpt", branch = "plonk-verifier" }
-
 [dev-dependencies]
 paste = "1.0.7"
 
