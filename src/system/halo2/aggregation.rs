@@ -20,30 +20,36 @@ use crate::{
     Protocol,
 };
 use ark_std::{end_timer, start_timer};
-use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
+use halo2_curves::{
+    bn256::{Bn256, Fq, Fr, G1Affine},
+    group::ff::PrimeField,
+};
 use halo2_ecc::{
     fields::fp::FpConfig,
     gates::{Context, ContextParams},
 };
 use halo2_proofs::{
-    circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk::{self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey},
+    circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
+    plonk::{
+        self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey, VerifyingKey,
+    },
     poly::{
         commitment::ParamsProver,
         kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::{ProverSHPLONK, VerifierSHPLONK},
-            strategy::{AccumulatorStrategy, SingleStrategy},
+            strategy::AccumulatorStrategy,
         },
         VerificationStrategy,
     },
     transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
 };
 use itertools::Itertools;
-use rand::rngs::OsRng;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use std::{
-    io::{Cursor, Read, Write},
+    fs::{self, File},
+    io::{BufReader, Cursor, Read, Write},
+    path::Path,
     rc::Rc,
 };
 
@@ -53,7 +59,7 @@ const R_F: usize = 8;
 const R_P: usize = 60;
 
 type Halo2Loader<'a, 'b> = loader::halo2::Halo2Loader<'a, 'b, G1Affine>;
-type PoseidonTranscript<L, S, B> =
+pub type PoseidonTranscript<L, S, B> =
     system::halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, B, T, RATE, R_F, R_P>;
 
 type Pcs = Kzg<Bn256, Bdfg21>;
@@ -120,7 +126,8 @@ pub fn aggregate<'a, 'b>(
     snarks: &[SnarkWitness],
     as_vk: &AsVk,
     as_proof: Value<&'_ [u8]>,
-) -> KzgAccumulator<G1Affine, Rc<Halo2Loader<'a, 'b>>> {
+    expose_instances: bool,
+) -> Vec<AssignedCell<Fr, Fr>> {
     let assign_instances = |instances: &[Vec<Value<Fr>>]| {
         instances
             .iter()
@@ -130,10 +137,18 @@ pub fn aggregate<'a, 'b>(
             .collect_vec()
     };
 
+    let mut instances_to_expose = vec![];
     let mut accumulators = snarks
         .iter()
         .flat_map(|snark| {
             let instances = assign_instances(&snark.instances);
+            if expose_instances {
+                instances_to_expose.extend(
+                    instances
+                        .iter()
+                        .flat_map(|instance| instance.iter().map(|scalar| scalar.assigned())),
+                );
+            }
             let mut transcript =
                 PoseidonTranscript::<Rc<Halo2Loader>, _, _>::new(loader, snark.proof());
             let proof =
@@ -142,7 +157,7 @@ pub fn aggregate<'a, 'b>(
         })
         .collect_vec();
 
-    let acccumulator = if accumulators.len() > 1 {
+    let KzgAccumulator { lhs, rhs } = if accumulators.len() > 1 {
         let mut transcript = PoseidonTranscript::<Rc<Halo2Loader>, _, _>::new(loader, as_proof);
         let proof = As::read_proof(as_vk, &accumulators, &mut transcript).unwrap();
         As::verify(as_vk, &accumulators, &proof).unwrap()
@@ -150,7 +165,19 @@ pub fn aggregate<'a, 'b>(
         accumulators.pop().unwrap()
     };
 
-    acccumulator
+    let lhs = lhs.assigned();
+    let rhs = rhs.assigned();
+
+    lhs.x
+        .truncation
+        .limbs
+        .iter()
+        .chain(lhs.y.truncation.limbs.iter())
+        .chain(rhs.x.truncation.limbs.iter())
+        .chain(rhs.y.truncation.limbs.iter())
+        .chain(instances_to_expose.iter())
+        .cloned()
+        .collect_vec()
 }
 
 #[derive(Clone)]
@@ -160,10 +187,15 @@ pub struct AggregationCircuit {
     instances: Vec<Fr>,
     as_vk: AsVk,
     as_proof: Value<Vec<u8>>,
+    expose_target_instances: bool,
 }
 
 impl AggregationCircuit {
-    pub fn new(params: &ParamsKZG<Bn256>, snarks: impl IntoIterator<Item = Snark>) -> Self {
+    pub fn new(
+        params: &ParamsKZG<Bn256>,
+        snarks: impl IntoIterator<Item = Snark>,
+        expose_target_instances: bool,
+    ) -> Self {
         let svk = params.get_g()[0].into();
         let snarks = snarks.into_iter().collect_vec();
 
@@ -195,7 +227,11 @@ impl AggregationCircuit {
         };
 
         let KzgAccumulator { lhs, rhs } = accumulator;
-        let instances = [lhs.x, lhs.y, rhs.x, rhs.y].map(fe_to_limbs::<_, _, LIMBS, BITS>).concat();
+        let mut instances =
+            [lhs.x, lhs.y, rhs.x, rhs.y].map(fe_to_limbs::<_, _, LIMBS, BITS>).concat();
+        if expose_target_instances {
+            instances.extend(snarks.iter().flat_map(|snark| snark.instances.iter().flatten()));
+        }
 
         Self {
             svk,
@@ -203,6 +239,7 @@ impl AggregationCircuit {
             instances,
             as_vk: as_pk.vk(),
             as_proof,
+            expose_target_instances,
         }
     }
 
@@ -210,8 +247,9 @@ impl AggregationCircuit {
         (0..4 * LIMBS).map(|idx| (0, idx)).collect()
     }
 
-    pub fn num_instance() -> Vec<usize> {
-        vec![4 * LIMBS]
+    pub fn num_instance(&self) -> Vec<usize> {
+        dbg!(self.instances.len());
+        vec![self.instances.len()]
     }
 
     pub fn instances(&self) -> Vec<Vec<Fr>> {
@@ -234,13 +272,13 @@ impl Circuit<Fr> for AggregationCircuit {
             instances: Vec::new(),
             as_vk: self.as_vk,
             as_proof: Value::unknown(),
+            expose_target_instances: self.expose_target_instances,
         }
     }
 
     fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
         let path = "./src/configs/verify_circuit.config";
-        let params_str =
-            std::fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
+        let params_str = fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
         let params: Halo2VerifierCircuitConfigParams =
             serde_json::from_str(params_str.as_str()).unwrap();
 
@@ -278,7 +316,7 @@ impl Circuit<Fr> for AggregationCircuit {
         // Need to trick layouter to skip first pass in get shape mode
         let using_simple_floor_planner = true;
         let mut first_pass = true;
-        let mut final_pair = None;
+        let mut assigned_instances = None;
         layouter.assign_region(
             || "",
             |region| {
@@ -296,30 +334,26 @@ impl Circuit<Fr> for AggregationCircuit {
                 );
 
                 let loader = Halo2Loader::new(&config.base_field_config, ctx);
-                let KzgAccumulator { lhs, rhs } =
-                    aggregate(&self.svk, &loader, &self.snarks, &self.as_vk, self.as_proof());
+                let instances = aggregate(
+                    &self.svk,
+                    &loader,
+                    &self.snarks,
+                    &self.as_vk,
+                    self.as_proof(),
+                    self.expose_target_instances,
+                );
 
                 // REQUIRED STEP
                 loader.finalize();
-                final_pair = Some((lhs.assigned(), rhs.assigned()));
+                assigned_instances = Some(instances);
 
                 Ok(())
             },
         )?;
-        let (lhs, rhs) = final_pair.unwrap();
         Ok({
             // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
             let mut layouter = layouter.namespace(|| "expose");
-            for (i, assigned_instance) in lhs
-                .x
-                .truncation
-                .limbs
-                .iter()
-                .chain(lhs.y.truncation.limbs.iter())
-                .chain(rhs.x.truncation.limbs.iter())
-                .chain(rhs.y.truncation.limbs.iter())
-                .enumerate()
-            {
+            for (i, assigned_instance) in assigned_instances.unwrap().iter().enumerate() {
                 layouter.constrain_instance(
                     assigned_instance.cell().clone(),
                     config.instance,
@@ -336,14 +370,110 @@ pub fn gen_srs(k: u32) -> ParamsKZG<Bn256> {
     })
 }
 
-pub fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<G1Affine> {
-    let vk_time = start_timer!(|| "vkey");
-    let vk = keygen_vk(params, circuit).unwrap();
-    end_timer!(vk_time);
-    let pk_time = start_timer!(|| "pkey");
-    let pk = keygen_pk(params, vk, circuit).unwrap();
-    end_timer!(pk_time);
-    pk
+pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
+    params: &ParamsKZG<Bn256>,
+    circuit: &ConcreteCircuit,
+    name: &str,
+) -> VerifyingKey<G1Affine> {
+    let path = format!("./data/{}.vkey", name);
+    match File::open(path.as_str()) {
+        Ok(f) => {
+            println!("Reading vkey from {}", path);
+            let mut bufreader = BufReader::new(f);
+            let vk = VerifyingKey::read::<_, ConcreteCircuit>(&mut bufreader, params)
+                .expect("Reading vkey should not fail");
+            vk
+        }
+        Err(_) => {
+            let vk_time = start_timer!(|| "vkey");
+            let vk = keygen_vk(params, circuit).unwrap();
+            end_timer!(vk_time);
+            let mut f = File::create(path.as_str()).unwrap();
+            vk.write(&mut f).unwrap();
+            vk
+        }
+    }
+}
+
+pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
+    params: &ParamsKZG<Bn256>,
+    circuit: &ConcreteCircuit,
+    name: &str,
+) -> ProvingKey<G1Affine> {
+    let path = format!("./data/{}.pkey", name);
+    match File::open(path.as_str()) {
+        Ok(f) => {
+            println!("Reading pkey from {}", path);
+            let mut bufreader = BufReader::new(f);
+            let pk = ProvingKey::read::<_, ConcreteCircuit>(&mut bufreader, params)
+                .expect("Reading pkey should not fail");
+            pk
+        }
+        Err(_) => {
+            let vk = gen_vk::<ConcreteCircuit>(params, circuit, name);
+            let pk_time = start_timer!(|| "pkey");
+            let pk = keygen_pk(params, vk, circuit).unwrap();
+            end_timer!(pk_time);
+            let mut f = File::create(path.as_str()).unwrap();
+            pk.write(&mut f).unwrap();
+            pk
+        }
+    }
+}
+
+pub fn read_bytes(path: &str) -> Vec<u8> {
+    let mut buf = vec![];
+    let mut f = File::open(path).unwrap();
+    f.read_to_end(&mut buf).unwrap();
+    buf
+}
+
+pub fn write_bytes(path: &str, buf: &Vec<u8>) {
+    let mut f = File::create(path).unwrap();
+    f.write(buf).unwrap();
+}
+
+/// reads the instances for T::N_PROOFS circuits from file
+pub fn read_instances<T: TargetCircuit>(path: &str) -> Option<Vec<Vec<Vec<Fr>>>> {
+    let f = File::open(path);
+    if let Err(_) = f {
+        return None;
+    }
+    let f = f.unwrap();
+    let reader = BufReader::new(f);
+    let instances_bytes: Vec<Vec<Vec<u8>>> = serde_json::from_reader(reader).unwrap();
+    let mut ret = vec![];
+    for circuit_instances in instances_bytes.into_iter() {
+        let mut ret1 = vec![];
+        for instance_column in circuit_instances.into_iter() {
+            let mut ret2 = vec![];
+            assert_eq!(instance_column.len() % 32, 0);
+            for id in (0..instance_column.len()).step_by(32) {
+                let mut repr = [0u8; 32];
+                repr.clone_from_slice(&instance_column[id..id + 32]);
+                ret2.push(Fr::from_repr(repr).unwrap());
+            }
+            ret1.push(ret2);
+        }
+        ret.push(ret1);
+    }
+    Some(ret)
+}
+
+pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
+    let mut bytes = vec![];
+    for circuit_instances in instances.iter() {
+        bytes.push(
+            circuit_instances
+                .iter()
+                .map(|instance_column| {
+                    instance_column.iter().flat_map(|x| x.to_repr()).collect_vec()
+                })
+                .collect_vec(),
+        );
+    }
+    let f = File::create(path).unwrap();
+    serde_json::to_writer(f, &bytes).unwrap();
 }
 
 pub trait TargetCircuit {
@@ -359,10 +489,11 @@ pub trait TargetCircuit {
 }
 
 pub fn create_snark_shplonk<T: TargetCircuit>(
+    circuits: Vec<T::Circuit>,
+    instances: Vec<Vec<Vec<Fr>>>, // instances[i][j][..] is the i-th circuit's j-th instance column
     accumulator_indices: Option<Vec<(usize, usize)>>,
 ) -> (ParamsKZG<Bn256>, Snark) {
     println!("CREATING SNARK FOR: {}", T::NAME);
-    let circuits = (0..T::N_PROOFS).map(|_| T::default_circuit()).collect_vec();
     let config = if let Some(accumulator_indices) = accumulator_indices {
         Config::kzg()
             .set_zk(true)
@@ -373,14 +504,13 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     };
     let params = gen_srs(T::TARGET_CIRCUIT_K);
 
-    let pk = gen_pk(&params, &circuits[0]);
-    let num_instance = T::instances().iter().map(|instances| instances.len()).collect();
+    let pk = gen_pk(&params, &T::default_circuit(), T::NAME);
+    // num_instance[i] is number of instance columns in i-th circuit
+    let num_instance = instances.iter().map(|instances| instances.len()).collect();
     let protocol = compile(&params, pk.get_vk(), config.with_num_instance(num_instance));
 
-    let proof_time = start_timer!(|| "create proof");
     // usual shenanigans to turn nested Vec into nested slice
-    let instances0: Vec<Vec<Vec<Fr>>> = circuits.iter().map(|_| T::instances()).collect_vec();
-    let instances1: Vec<Vec<&[Fr]>> = instances0
+    let instances1: Vec<Vec<&[Fr]>> = instances
         .iter()
         .map(|instances| instances.iter().map(Vec::as_slice).collect_vec())
         .collect_vec();
@@ -388,33 +518,34 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     // TODO: need to cache the instances as well!
 
     let proof = {
-        let path = format!("./data/proof_{}.data", T::NAME);
-        match std::fs::File::open(path.as_str()) {
-            Ok(mut file) => {
-                let mut buf = vec![];
-                file.read_to_end(&mut buf).unwrap();
-                buf
-            }
-            Err(_) => {
-                let mut transcript =
-                    PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
-                create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, ChallengeScalar<_>, _, _, _>(
-                    &params,
-                    &pk,
-                    &circuits,
-                    instances2.as_slice(),
-                    &mut ChaCha20Rng::from_seed(Default::default()),
-                    &mut transcript,
-                )
-                .unwrap();
-                let proof = transcript.finalize();
-                let mut file = std::fs::File::create(path.as_str()).unwrap();
-                file.write_all(&proof).unwrap();
-                proof
-            }
+        let path = format!("./data/proof_{}.dat", T::NAME);
+        let instance_path = format!("./data/instances_{}.dat", T::NAME);
+        if let Some(cached_instances) = read_instances::<T>(instance_path.as_str()) && Path::new(path.as_str()).exists() && cached_instances == instances {
+            let mut file = File::open(path.as_str()).unwrap();
+            let mut buf = vec![];
+            file.read_to_end(&mut buf).unwrap();
+            buf
+        } else {
+            let proof_time = start_timer!(|| "create proof");
+            let mut transcript =
+                PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
+            create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, ChallengeScalar<_>, _, _, _>(
+                &params,
+                &pk,
+                &circuits,
+                instances2.as_slice(),
+                &mut ChaCha20Rng::from_seed(Default::default()),
+                &mut transcript,
+            )
+            .unwrap();
+            let proof = transcript.finalize();
+            let mut file = File::create(path.as_str()).unwrap();
+            file.write_all(&proof).unwrap();
+            write_instances(&instances, instance_path.as_str());
+            end_timer!(proof_time);
+            proof
         }
     };
-    end_timer!(proof_time);
 
     let verify_time = start_timer!(|| "verify proof");
     {
@@ -439,5 +570,5 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     }
     end_timer!(verify_time);
 
-    (params, Snark::new(protocol.clone(), instances0.into_iter().flatten().collect_vec(), proof))
+    (params, Snark::new(protocol.clone(), instances.into_iter().flatten().collect_vec(), proof))
 }
