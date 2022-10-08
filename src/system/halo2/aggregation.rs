@@ -370,14 +370,55 @@ pub fn gen_srs(k: u32) -> ParamsKZG<Bn256> {
     })
 }
 
-pub fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<G1Affine> {
-    let vk_time = start_timer!(|| "vkey");
-    let vk = keygen_vk(params, circuit).unwrap();
-    end_timer!(vk_time);
-    let pk_time = start_timer!(|| "pkey");
-    let pk = keygen_pk(params, vk, circuit).unwrap();
-    end_timer!(pk_time);
-    pk
+pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
+    params: &ParamsKZG<Bn256>,
+    circuit: &ConcreteCircuit,
+    name: &str,
+) -> VerifyingKey<G1Affine> {
+    let path = format!("./data/{}.vkey", name);
+    match File::open(path.as_str()) {
+        Ok(f) => {
+            println!("Reading vkey from {}", path);
+            let mut bufreader = BufReader::new(f);
+            let vk = VerifyingKey::read::<_, ConcreteCircuit>(&mut bufreader, params)
+                .expect("Reading vkey should not fail");
+            vk
+        }
+        Err(_) => {
+            let vk_time = start_timer!(|| "vkey");
+            let vk = keygen_vk(params, circuit).unwrap();
+            end_timer!(vk_time);
+            let mut f = File::create(path.as_str()).unwrap();
+            vk.write(&mut f).unwrap();
+            vk
+        }
+    }
+}
+
+pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
+    params: &ParamsKZG<Bn256>,
+    circuit: &ConcreteCircuit,
+    name: &str,
+) -> ProvingKey<G1Affine> {
+    let path = format!("./data/{}.pkey", name);
+    match File::open(path.as_str()) {
+        Ok(f) => {
+            println!("Reading pkey from {}", path);
+            let mut bufreader = BufReader::new(f);
+            let pk = ProvingKey::read::<_, ConcreteCircuit>(&mut bufreader, params)
+                .expect("Reading pkey should not fail");
+            pk
+        }
+        Err(_) => {
+            let vk = gen_vk::<ConcreteCircuit>(params, circuit, name);
+            let pk_time = start_timer!(|| "pkey");
+            let pk = keygen_pk(params, vk, circuit).unwrap();
+            end_timer!(pk_time);
+            let mut f = File::create(path.as_str()).unwrap();
+            pk.write(&mut f).unwrap();
+            pk
+        }
+    }
 }
 
 pub fn read_bytes(path: &str) -> Vec<u8> {
@@ -463,12 +504,11 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     };
     let params = gen_srs(T::TARGET_CIRCUIT_K);
 
-    let pk = gen_pk(&params, &T::default_circuit());
+    let pk = gen_pk(&params, &T::default_circuit(), T::NAME);
     // num_instance[i] is number of instance columns in i-th circuit
     let num_instance = instances.iter().map(|instances| instances.len()).collect();
     let protocol = compile(&params, pk.get_vk(), config.with_num_instance(num_instance));
 
-    let proof_time = start_timer!(|| "create proof");
     // usual shenanigans to turn nested Vec into nested slice
     let instances1: Vec<Vec<&[Fr]>> = instances
         .iter()
@@ -478,7 +518,7 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     // TODO: need to cache the instances as well!
 
     let proof = {
-        let path = format!("./data/proof_{}.data", T::NAME);
+        let path = format!("./data/proof_{}.dat", T::NAME);
         let instance_path = format!("./data/instances_{}.dat", T::NAME);
         if let Some(cached_instances) = read_instances::<T>(instance_path.as_str()) && Path::new(path.as_str()).exists() && cached_instances == instances {
             let mut file = File::open(path.as_str()).unwrap();
@@ -486,6 +526,7 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
             file.read_to_end(&mut buf).unwrap();
             buf
         } else {
+            let proof_time = start_timer!(|| "create proof");
             let mut transcript =
                 PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
             create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, ChallengeScalar<_>, _, _, _>(
@@ -501,10 +542,10 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
             let mut file = File::create(path.as_str()).unwrap();
             file.write_all(&proof).unwrap();
             write_instances(&instances, instance_path.as_str());
+            end_timer!(proof_time);
             proof
         }
     };
-    end_timer!(proof_time);
 
     let verify_time = start_timer!(|| "verify proof");
     {

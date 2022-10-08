@@ -291,9 +291,7 @@ fn main() {
     let params = gen_srs(k);
 
     let agg_circuit = AggregationCircuit::new(&params, snarks, true);
-    let pk_time = start_timer!(|| "agg_circuit vk & pk time");
-    let pk = gen_pk(&params, &agg_circuit);
-    end_timer!(pk_time);
+    let pk = gen_pk(&params, &agg_circuit, "standard_plonk_agg_circuit");
 
     let deploy_time = start_timer!(|| "generate aggregation evm verifier code");
     let deployment_code = gen_aggregation_evm_verifier(

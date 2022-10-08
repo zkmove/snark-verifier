@@ -181,7 +181,7 @@ fn main() {
     let params = gen_srs(k);
 
     let pk_time = start_timer!(|| "agg_circuit vk & pk time");
-    let pk = gen_pk(&params, &agg_circuit);
+    let pk = gen_pk(&params, &agg_circuit, "bin_agg_circuit");
     end_timer!(pk_time);
 
     let deploy_time = start_timer!(|| "generate aggregation evm verifier code");
