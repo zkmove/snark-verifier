@@ -14,7 +14,7 @@ use std::io::Cursor;
 mod kzg;
 
 pub fn load_verify_circuit_degree() -> u32 {
-    let path = "./src/configs/verify_circuit.config";
+    let path = "./configs/verify_circuit.config";
     let params_str =
         std::fs::read_to_string(path).expect(format!("{} file should exist", path).as_str());
     let params: Halo2VerifierCircuitConfigParams =

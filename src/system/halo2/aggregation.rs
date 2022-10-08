@@ -277,7 +277,7 @@ impl Circuit<Fr> for AggregationCircuit {
     }
 
     fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
-        let path = "./src/configs/verify_circuit.config";
+        let path = "./configs/verify_circuit.config";
         let params_str = fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
         let params: Halo2VerifierCircuitConfigParams =
             serde_json::from_str(params_str.as_str()).unwrap();
@@ -389,6 +389,7 @@ pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
             let vk = keygen_vk(params, circuit).unwrap();
             end_timer!(vk_time);
             let mut f = File::create(path.as_str()).unwrap();
+            println!("Writing vkey to {}", path);
             vk.write(&mut f).unwrap();
             vk
         }
@@ -415,6 +416,7 @@ pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
             let pk = keygen_pk(params, vk, circuit).unwrap();
             end_timer!(pk_time);
             let mut f = File::create(path.as_str()).unwrap();
+            println!("Writing pkey to {}", path);
             pk.write(&mut f).unwrap();
             pk
         }

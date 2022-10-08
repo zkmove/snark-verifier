@@ -256,7 +256,7 @@ impl Circuit<Fr> for Accumulation {
     }
 
     fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
-        let path = "./src/configs/verify_circuit.config";
+        let path = "./configs/verify_circuit.config";
         let params_str =
             std::fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
         let params: Halo2VerifierCircuitConfigParams =

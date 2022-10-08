@@ -255,7 +255,7 @@ fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>)
 }
 
 pub fn load_verify_circuit_degree() -> u32 {
-    let path = "./src/configs/verify_circuit.config";
+    let path = "./configs/verify_circuit.config";
     let params_str =
         std::fs::read_to_string(path).expect(format!("{} file should exist", path).as_str());
     let params: plonk_verifier::system::halo2::Halo2VerifierCircuitConfigParams =
