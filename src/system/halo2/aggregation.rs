@@ -505,8 +505,8 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     let params = gen_srs(T::TARGET_CIRCUIT_K);
 
     let pk = gen_pk(&params, &T::default_circuit(), T::NAME);
-    // num_instance[i] is number of instance columns in i-th circuit
-    let num_instance = instances.iter().map(|instances| instances.len()).collect();
+    // num_instance[i] is length of the i-th instance columns in circuit 0 (all circuits should have same shape of instances)
+    let num_instance = instances[0].iter().map(|instance_column| instance_column.len()).collect();
     let protocol = compile(&params, pk.get_vk(), config.with_num_instance(num_instance));
 
     // usual shenanigans to turn nested Vec into nested slice
