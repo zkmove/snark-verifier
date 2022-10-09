@@ -25,7 +25,7 @@ sha3 = { version = "0.10.1", optional = true }
 foundry_evm = { git = "https://github.com/jonathanpwang/foundry", package = "foundry-evm", branch = "fix/pin-revm-to-rev", optional = true }
 
 # loader_halo2
-halo2_ecc = { git = "https://github.com/jonathanpwang/halo2-ecc", tag = "v2022_09_29", default-features = false, optional = true }
+halo2_ecc = { git = "ssh://github.com/jonathanpwang/halo2-ecc", tag = "v2022_09_29", default-features = false, optional = true }
 poseidon = { git = "https://github.com/privacy-scaling-explorations/poseidon", branch = "padding", optional = true }
 
 [dev-dependencies]
@@ -50,7 +50,7 @@ sanity_check = []
 
 [patch."https://github.com/privacy-scaling-explorations/halo2"]
 # halo2_proofs = { path = "../halo2/halo2_proofs" }
-halo2_proofs = { git = "https://github.com/zk-attestor/halo2.git", branch = "serialize", package = "halo2_proofs" }
+halo2_proofs = { git = "https://github.com/axiom-crypto/halo2.git", branch = "serialize", package = "halo2_proofs" }
 
 [[example]]
 name = "evm-verifier"
