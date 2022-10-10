@@ -756,6 +756,35 @@ pub struct Halo2VerifierCircuitConfig {
     pub instance: Column<Instance>,
 }
 
+impl Halo2VerifierCircuitConfig {
+    pub fn configure(
+        meta: &mut ConstraintSystem<Fr>,
+        params: Halo2VerifierCircuitConfigParams,
+    ) -> Self {
+        assert!(
+            params.limb_bits == BITS && params.num_limbs == LIMBS,
+            "For now we fix limb_bits = {}, otherwise change code",
+            BITS
+        );
+        let base_field_config = halo2_ecc::fields::fp::FpConfig::configure(
+            meta,
+            params.strategy,
+            params.num_advice,
+            params.num_lookup_advice,
+            params.num_fixed,
+            params.lookup_bits,
+            params.limb_bits,
+            params.num_limbs,
+            halo2_ecc::utils::modulus::<Fq>(),
+        );
+
+        let instance = meta.instance_column();
+        meta.enable_equality(instance);
+
+        Self { base_field_config, instance }
+    }
+}
+
 pub fn read_or_create_srs<'a, C: CurveAffine, P: ParamsProver<'a, C>>(
     k: u32,
     setup: impl Fn(u32) -> P,

@@ -21,13 +21,10 @@ use crate::{
 };
 use ark_std::{end_timer, start_timer};
 use halo2_curves::{
-    bn256::{Bn256, Fq, Fr, G1Affine},
+    bn256::{Bn256, Fr, G1Affine},
     group::ff::PrimeField,
 };
-use halo2_ecc::{
-    fields::fp::FpConfig,
-    gates::{Context, ContextParams},
-};
+pub use halo2_ecc::gates::{Context, ContextParams};
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::{
@@ -291,27 +288,7 @@ impl Circuit<Fr> for AggregationCircuit {
         let params: Halo2VerifierCircuitConfigParams =
             serde_json::from_str(params_str.as_str()).unwrap();
 
-        assert!(
-            params.limb_bits == BITS && params.num_limbs == LIMBS,
-            "For now we fix limb_bits = {}, otherwise change code",
-            BITS
-        );
-        let base_field_config = FpConfig::configure(
-            meta,
-            params.strategy,
-            params.num_advice,
-            params.num_lookup_advice,
-            params.num_fixed,
-            params.lookup_bits,
-            params.limb_bits,
-            params.num_limbs,
-            halo2_ecc::utils::modulus::<Fq>(),
-        );
-
-        let instance = meta.instance_column();
-        meta.enable_equality(instance);
-
-        Self::Config { base_field_config, instance }
+        Halo2VerifierCircuitConfig::configure(meta, params)
     }
 
     fn synthesize(
