@@ -50,21 +50,21 @@ use std::{
     rc::Rc,
 };
 
-const T: usize = 5;
-const RATE: usize = 4;
-const R_F: usize = 8;
-const R_P: usize = 60;
+pub const T: usize = 5;
+pub const RATE: usize = 4;
+pub const R_F: usize = 8;
+pub const R_P: usize = 60;
 
-type Halo2Loader<'a, 'b> = loader::halo2::Halo2Loader<'a, 'b, G1Affine>;
+pub type Halo2Loader<'a, 'b> = loader::halo2::Halo2Loader<'a, 'b, G1Affine>;
 pub type PoseidonTranscript<L, S, B> =
     system::halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, B, T, RATE, R_F, R_P>;
 
-type Pcs = Kzg<Bn256, Bdfg21>;
-type Svk = KzgSuccinctVerifyingKey<G1Affine>;
-type As = KzgAs<Pcs>;
-type AsPk = KzgAsProvingKey<G1Affine>;
-type AsVk = KzgAsVerifyingKey;
-type Plonk = verifier::Plonk<Pcs, LimbsEncoding<LIMBS, BITS>>;
+pub type Pcs = Kzg<Bn256, Bdfg21>;
+pub type Svk = KzgSuccinctVerifyingKey<G1Affine>;
+pub type As = KzgAs<Pcs>;
+pub type AsPk = KzgAsProvingKey<G1Affine>;
+pub type AsVk = KzgAsVerifyingKey;
+pub type Plonk = verifier::Plonk<Pcs, LimbsEncoding<LIMBS, BITS>>;
 
 pub struct Snark {
     protocol: Protocol<G1Affine>,
@@ -109,7 +109,7 @@ pub struct SnarkWitness {
 }
 
 impl SnarkWitness {
-    fn without_witnesses(&self) -> Self {
+    pub fn without_witnesses(&self) -> Self {
         SnarkWitness {
             protocol: self.protocol.clone(),
             instances: self
@@ -121,7 +121,7 @@ impl SnarkWitness {
         }
     }
 
-    fn proof(&self) -> Value<&[u8]> {
+    pub fn proof(&self) -> Value<&[u8]> {
         self.proof.as_ref().map(Vec::as_slice)
     }
 }
