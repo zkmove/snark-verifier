@@ -79,6 +79,15 @@ impl Snark {
     pub fn new(protocol: Protocol<G1Affine>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) -> Self {
         Self { protocol, instances, proof }
     }
+    pub fn protocol(&self) -> &Protocol<G1Affine> {
+        &self.protocol
+    }
+    pub fn instances(&self) -> &[Vec<Fr>] {
+        &self.instances
+    }
+    pub fn proof(&self) -> &[u8] {
+        &self.proof
+    }
 }
 
 impl From<Snark> for SnarkWitness {
