@@ -264,23 +264,16 @@ pub fn load_verify_circuit_degree() -> u32 {
 }
 
 impl TargetCircuit for StandardPlonk {
-    const TARGET_CIRCUIT_K: u32 = 8;
-    const PUBLIC_INPUT_SIZE: usize = 1;
     const N_PROOFS: usize = 1;
     const NAME: &'static str = "standard_plonk";
 
     type Circuit = Self;
-    fn default_circuit() -> Self::Circuit {
-        StandardPlonk::rand(OsRng)
-    }
-    fn instances() -> Vec<Vec<Fr>> {
-        unimplemented!()
-    }
 }
 
 fn main() {
     let app_circuit = StandardPlonk::rand(OsRng);
     let (_, snark) = create_snark_shplonk::<StandardPlonk>(
+        8,
         vec![app_circuit.clone()],
         vec![vec![vec![app_circuit.0]]],
         None,
@@ -306,6 +299,7 @@ fn main() {
     // use different input snarks to test instances etc
     let app_circuit = StandardPlonk::rand(OsRng);
     let (_, snark) = create_snark_shplonk::<StandardPlonk>(
+        8,
         vec![app_circuit.clone()],
         vec![vec![vec![app_circuit.0]]],
         None,

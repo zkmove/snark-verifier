@@ -269,10 +269,10 @@ impl AggregationCircuit {
     pub fn synthesize_proof(
         &self,
         config: Halo2VerifierCircuitConfig,
-        mut layouter: impl Layouter<Fr>,
+        layouter: &mut impl Layouter<Fr>,
+        instance_equalities: Vec<(usize, usize)>,
     ) -> Result<Vec<AssignedCell<Fr, Fr>>, plonk::Error> {
-        let mut layouter = layouter.namespace(|| "aggregation");
-        config.base_field_config.load_lookup_table(&mut layouter)?;
+        config.base_field_config.load_lookup_table(layouter)?;
 
         // Need to trick layouter to skip first pass in get shape mode
         let using_simple_floor_planner = true;
@@ -304,10 +304,15 @@ impl AggregationCircuit {
                     self.expose_target_instances,
                 );
 
+                for &(i, j) in &instance_equalities {
+                    loader
+                        .ctx_mut()
+                        .region
+                        .constrain_equal(instances[i].cell(), instances[j].cell())?;
+                }
                 // REQUIRED STEP
                 loader.finalize();
                 assigned_instances = Some(instances);
-
                 Ok(())
             },
         )?;
@@ -345,7 +350,7 @@ impl Circuit<Fr> for AggregationCircuit {
         mut layouter: impl Layouter<Fr>,
     ) -> Result<(), plonk::Error> {
         let config_instance = config.instance.clone();
-        let assigned_instances = self.synthesize_proof(config, layouter)?;
+        let assigned_instances = self.synthesize_proof(config, &mut layouter, vec![])?;
         Ok({
             // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
             let mut layouter = layouter.namespace(|| "expose");
@@ -475,18 +480,14 @@ pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
 }
 
 pub trait TargetCircuit {
-    const TARGET_CIRCUIT_K: u32;
-    const PUBLIC_INPUT_SIZE: usize;
     const N_PROOFS: usize;
     const NAME: &'static str;
 
     type Circuit: Circuit<Fr>;
-
-    fn default_circuit() -> Self::Circuit;
-    fn instances() -> Vec<Vec<Fr>>;
 }
 
 pub fn create_snark_shplonk<T: TargetCircuit>(
+    target_circuit_k: u32,
     circuits: Vec<T::Circuit>,
     instances: Vec<Vec<Vec<Fr>>>, // instances[i][j][..] is the i-th circuit's j-th instance column
     accumulator_indices: Option<Vec<(usize, usize)>>,
@@ -500,9 +501,9 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     } else {
         Config::kzg().set_zk(true).with_num_proof(T::N_PROOFS)
     };
-    let params = gen_srs(T::TARGET_CIRCUIT_K);
+    let params = gen_srs(target_circuit_k);
 
-    let pk = gen_pk(&params, &T::default_circuit(), T::NAME);
+    let pk = gen_pk(&params, &circuits[0], T::NAME);
     // num_instance[i] is length of the i-th instance columns in circuit 0 (all circuits should have same shape of instances)
     let num_instance = instances[0].iter().map(|instance_column| instance_column.len()).collect();
     let protocol = compile(&params, pk.get_vk(), config.with_num_instance(num_instance));
