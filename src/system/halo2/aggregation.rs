@@ -190,7 +190,7 @@ pub fn aggregate<'a, 'b>(
 pub struct AggregationCircuit {
     svk: Svk,
     snarks: Vec<SnarkWitness>,
-    instances: Vec<Fr>,
+    pub instances: Vec<Fr>,
     as_vk: AsVk,
     as_proof: Value<Vec<u8>>,
     expose_target_instances: bool,
@@ -265,37 +265,12 @@ impl AggregationCircuit {
     pub fn as_proof(&self) -> Value<&[u8]> {
         self.as_proof.as_ref().map(Vec::as_slice)
     }
-}
 
-impl Circuit<Fr> for AggregationCircuit {
-    type Config = Halo2VerifierCircuitConfig;
-    type FloorPlanner = SimpleFloorPlanner;
-
-    fn without_witnesses(&self) -> Self {
-        Self {
-            svk: self.svk,
-            snarks: self.snarks.iter().map(SnarkWitness::without_witnesses).collect(),
-            instances: Vec::new(),
-            as_vk: self.as_vk,
-            as_proof: Value::unknown(),
-            expose_target_instances: self.expose_target_instances,
-        }
-    }
-
-    fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
-        let path = "./configs/verify_circuit.config";
-        let params_str = fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
-        let params: Halo2VerifierCircuitConfigParams =
-            serde_json::from_str(params_str.as_str()).unwrap();
-
-        Halo2VerifierCircuitConfig::configure(meta, params)
-    }
-
-    fn synthesize(
+    pub fn synthesize_proof(
         &self,
-        config: Self::Config,
+        config: Halo2VerifierCircuitConfig,
         mut layouter: impl Layouter<Fr>,
-    ) -> Result<(), plonk::Error> {
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, plonk::Error> {
         let mut layouter = layouter.namespace(|| "aggregation");
         config.base_field_config.load_lookup_table(&mut layouter)?;
 
@@ -336,13 +311,48 @@ impl Circuit<Fr> for AggregationCircuit {
                 Ok(())
             },
         )?;
+        Ok(assigned_instances.unwrap())
+    }
+}
+
+impl Circuit<Fr> for AggregationCircuit {
+    type Config = Halo2VerifierCircuitConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self {
+            svk: self.svk,
+            snarks: self.snarks.iter().map(SnarkWitness::without_witnesses).collect(),
+            instances: Vec::new(),
+            as_vk: self.as_vk,
+            as_proof: Value::unknown(),
+            expose_target_instances: self.expose_target_instances,
+        }
+    }
+
+    fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
+        let path = "./configs/verify_circuit.config";
+        let params_str = fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
+        let params: Halo2VerifierCircuitConfigParams =
+            serde_json::from_str(params_str.as_str()).unwrap();
+
+        Halo2VerifierCircuitConfig::configure(meta, params)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), plonk::Error> {
+        let config_instance = config.instance.clone();
+        let assigned_instances = self.synthesize_proof(config, layouter)?;
         Ok({
             // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
             let mut layouter = layouter.namespace(|| "expose");
-            for (i, assigned_instance) in assigned_instances.unwrap().iter().enumerate() {
+            for (i, assigned_instance) in assigned_instances.iter().enumerate() {
                 layouter.constrain_instance(
                     assigned_instance.cell().clone(),
-                    config.instance,
+                    config_instance,
                     i,
                 )?;
             }
