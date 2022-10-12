@@ -20,12 +20,9 @@ use crate::{
     Protocol,
 };
 use ark_std::{end_timer, start_timer};
-use halo2_curves::{
-    bn256::{Bn256, Fr, G1Affine},
-    group::ff::PrimeField,
-};
+use halo2_curves::bn256::{Bn256, Fr, G1Affine};
 pub use halo2_ecc::gates::{Context, ContextParams};
-use halo2_ecc::utils::fe_to_biguint;
+use halo2_ecc::utils::{biguint_to_fe, fe_to_biguint};
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::{
@@ -43,6 +40,8 @@ use halo2_proofs::{
     transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
 };
 use itertools::Itertools;
+use num_bigint::BigUint;
+use num_traits::Num;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use std::{
     fs::{self, File},
@@ -445,29 +444,30 @@ pub fn read_instances<T: TargetCircuit>(path: &str) -> Option<Vec<Vec<Vec<Fr>>>>
     }
     let f = f.unwrap();
     let reader = BufReader::new(f);
-    let instances_bytes: Vec<Vec<Vec<u8>>> = serde_json::from_reader(reader).unwrap();
-    let mut ret = vec![];
-    for circuit_instances in instances_bytes.into_iter() {
-        let mut ret1 = vec![];
-        for instance_column in circuit_instances.into_iter() {
-            let mut ret2 = vec![];
-            assert_eq!(instance_column.len() % 32, 0);
-            for id in (0..instance_column.len()).step_by(32) {
-                let mut repr = [0u8; 32];
-                repr.clone_from_slice(&instance_column[id..id + 32]);
-                ret2.push(Fr::from_repr(repr).unwrap());
-            }
-            ret1.push(ret2);
-        }
-        ret.push(ret1);
-    }
+    let instances_str: Vec<Vec<Vec<String>>> = serde_json::from_reader(reader).unwrap();
+    let ret = instances_str
+        .into_iter()
+        .map(|circuit_instances| {
+            circuit_instances
+                .into_iter()
+                .map(|instance_column| {
+                    instance_column
+                        .iter()
+                        .map(|str| {
+                            biguint_to_fe::<Fr>(&BigUint::from_str_radix(str.as_str(), 16).unwrap())
+                        })
+                        .collect_vec()
+                })
+                .collect_vec()
+        })
+        .collect_vec();
     Some(ret)
 }
 
 pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
-    let mut bytes = vec![];
+    let mut hex_strings = vec![];
     for circuit_instances in instances.iter() {
-        bytes.push(
+        hex_strings.push(
             circuit_instances
                 .iter()
                 .map(|instance_column| {
@@ -477,7 +477,7 @@ pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
         );
     }
     let f = BufWriter::new(File::create(path).unwrap());
-    serde_json::to_writer(f, &bytes).unwrap();
+    serde_json::to_writer(f, &hex_strings).unwrap();
 }
 
 pub trait TargetCircuit {
