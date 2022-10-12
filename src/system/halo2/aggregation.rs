@@ -25,6 +25,7 @@ use halo2_curves::{
     group::ff::PrimeField,
 };
 pub use halo2_ecc::gates::{Context, ContextParams};
+use halo2_ecc::utils::fe_to_biguint;
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::{
@@ -470,7 +471,7 @@ pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
             circuit_instances
                 .iter()
                 .map(|instance_column| {
-                    instance_column.iter().flat_map(|x| x.to_repr()).collect_vec()
+                    instance_column.iter().map(|x| fe_to_biguint(x).to_str_radix(16)).collect_vec()
                 })
                 .collect_vec(),
         );
