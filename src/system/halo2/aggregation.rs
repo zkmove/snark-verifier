@@ -46,7 +46,7 @@ use itertools::Itertools;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use std::{
     fs::{self, File},
-    io::{BufReader, Cursor, Read, Write},
+    io::{BufReader, BufWriter, Cursor, Read, Write},
     path::Path,
     rc::Rc,
 };
@@ -390,7 +390,7 @@ pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
             let vk_time = start_timer!(|| "vkey");
             let vk = keygen_vk(params, circuit).unwrap();
             end_timer!(vk_time);
-            let mut f = File::create(path.as_str()).unwrap();
+            let mut f = BufWriter::new(File::create(path.as_str()).unwrap());
             println!("Writing vkey to {}", path);
             vk.write(&mut f).unwrap();
             vk
@@ -417,7 +417,7 @@ pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
             let pk_time = start_timer!(|| "pkey");
             let pk = keygen_pk(params, vk, circuit).unwrap();
             end_timer!(pk_time);
-            let mut f = File::create(path.as_str()).unwrap();
+            let mut f = BufWriter::new(File::create(path.as_str()).unwrap());
             println!("Writing pkey to {}", path);
             pk.write(&mut f).unwrap();
             pk
@@ -476,7 +476,7 @@ pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
                 .collect_vec(),
         );
     }
-    let f = File::create(path).unwrap();
+    let f = BufWriter::new(File::create(path).unwrap());
     serde_json::to_writer(f, &bytes).unwrap();
 }
 

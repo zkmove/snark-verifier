@@ -21,7 +21,12 @@ use halo2_proofs::{
     transcript::{EncodedChallenge, Transcript},
 };
 use serde::{Deserialize, Serialize};
-use std::{fs, io, iter, mem::size_of};
+use std::{
+    fs::{self, File},
+    io::{self, BufReader, BufWriter},
+    iter,
+    mem::size_of,
+};
 
 pub mod aggregation;
 pub mod transcript;
@@ -792,15 +797,16 @@ pub fn read_or_create_srs<'a, C: CurveAffine, P: ParamsProver<'a, C>>(
     let dir = "./params";
     let path = format!("{}/kzg_bn254_{}.srs", dir, k);
     match fs::File::open(path.as_str()) {
-        Ok(mut file) => {
+        Ok(f) => {
             println!("read params from {}", path);
-            P::read(&mut file).unwrap()
+            let mut reader = BufReader::new(f);
+            P::read(&mut reader).unwrap()
         }
         Err(_) => {
             println!("creating params for {}", k);
             fs::create_dir_all(dir).unwrap();
             let params = setup(k);
-            params.write(&mut fs::File::create(path).unwrap()).unwrap();
+            params.write(&mut BufWriter::new(File::create(path).unwrap())).unwrap();
             params
         }
     }
