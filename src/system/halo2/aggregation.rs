@@ -20,11 +20,14 @@ use crate::{
     Protocol,
 };
 use ark_std::{end_timer, start_timer};
+use halo2_base::AssignedValue;
+pub use halo2_base::{
+    utils::{biguint_to_fe, fe_to_biguint},
+    Context, ContextParams,
+};
 use halo2_curves::bn256::{Bn256, Fr, G1Affine};
-pub use halo2_ecc::gates::{Context, ContextParams};
-use halo2_ecc::utils::{biguint_to_fe, fe_to_biguint};
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
+    circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{
         self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey, VerifyingKey,
     },
@@ -133,7 +136,7 @@ pub fn aggregate<'a, 'b>(
     as_vk: &AsVk,
     as_proof: Value<&'_ [u8]>,
     expose_instances: bool,
-) -> Vec<AssignedCell<Fr, Fr>> {
+) -> Vec<AssignedValue<Fr>> {
     let assign_instances = |instances: &[Vec<Value<Fr>>]| {
         instances
             .iter()
@@ -271,7 +274,7 @@ impl AggregationCircuit {
         config: Halo2VerifierCircuitConfig,
         layouter: &mut impl Layouter<Fr>,
         instance_equalities: Vec<(usize, usize)>,
-    ) -> Result<Vec<AssignedCell<Fr, Fr>>, plonk::Error> {
+    ) -> Result<Vec<AssignedValue<Fr>>, plonk::Error> {
         config.base_field_config.load_lookup_table(layouter)?;
 
         // Need to trick layouter to skip first pass in get shape mode
@@ -288,9 +291,10 @@ impl AggregationCircuit {
                 let ctx = Context::new(
                     region,
                     ContextParams {
-                        num_advice: config.base_field_config.range.gate.num_advice,
-                        using_simple_floor_planner,
-                        first_pass,
+                        num_advice: vec![(
+                            config.base_field_config.range.context_id.clone(),
+                            config.base_field_config.range.gate.num_advice,
+                        )],
                     },
                 );
 

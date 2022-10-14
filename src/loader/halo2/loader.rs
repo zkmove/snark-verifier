@@ -1,24 +1,23 @@
 use crate::{
     loader::{EcPointLoader, LoadedEcPoint, LoadedScalar, Loader, ScalarLoader},
     util::{
-        arithmetic::{Curve, CurveAffine, Field, FieldOps, PrimeField},
+        arithmetic::{Curve, CurveAffine, Field, FieldOps, PrimeCurveAffine, PrimeField},
         Itertools,
     },
+};
+use halo2_base::{
+    self,
+    gates::{flex_gate::FlexGateConfig, range::RangeConfig, GateInstructions, RangeInstructions},
+    utils::fe_to_bigint,
+    Context,
+    QuantumCell::{self, Constant, Existing, Witness},
 };
 use halo2_ecc::{
     bigint::{CRTInteger, OverflowInteger},
     ecc::{fixed::FixedEccPoint, EccChip, EccPoint},
     fields::{fp::FpConfig, FieldChip},
-    gates::{
-        flex_gate::FlexGateConfig,
-        range::RangeConfig,
-        Context, GateInstructions,
-        QuantumCell::{self, Constant, Existing, Witness},
-        RangeInstructions,
-    },
-    utils::fe_to_bigint,
 };
-use halo2_proofs::circuit::{self, AssignedCell};
+use halo2_proofs::circuit;
 use num_bigint::{BigInt, BigUint};
 use std::{
     cell::RefCell,
@@ -27,8 +26,7 @@ use std::{
     rc::Rc,
 };
 
-pub type AssignedValue<C> =
-    AssignedCell<<C as CurveAffine>::ScalarExt, <C as CurveAffine>::ScalarExt>;
+pub type AssignedValue<C> = halo2_base::AssignedValue<<C as PrimeCurveAffine>::Scalar>;
 pub type BaseFieldChip<C> = FpConfig<<C as CurveAffine>::ScalarExt, <C as CurveAffine>::Base>;
 pub type AssignedInteger<C> = CRTInteger<<C as CurveAffine>::ScalarExt>;
 pub type AssignedEcPoint<C> = EccPoint<<C as CurveAffine>::ScalarExt, AssignedInteger<C>>;
@@ -93,31 +91,19 @@ where
     }
 
     pub fn finalize(&self) {
-        let (const_rows, total_fixed, lookup_rows) = self
+        let stats = self
             .field_chip()
             .finalize(&mut self.ctx_mut())
             .expect("finalizing constants and lookups");
+        println!("stats (max rows fixed, total fixed cells, max rows lookup) {:?}", stats);
 
-        println!("Finished exposing instances\n");
-        let advice_rows = self.ctx.borrow().advice_rows.clone();
-        let advice_rows = advice_rows.iter();
-        let total_cells = advice_rows.clone().sum::<usize>();
+        let total_cells =
+            self.ctx.borrow().advice_rows[&self.range().context_id].iter().sum::<usize>();
         println!("total non-lookup advice cells used: {}", total_cells);
-        println!(
-            "maximum rows used by an advice column: {}",
-            Iterator::max(advice_rows.clone()).or(Some(&0)).unwrap(),
-        );
-        println!(
-            "minimum rows used by an advice column: {}",
-            Iterator::max(advice_rows.clone()).or(Some(&usize::MAX)).unwrap(),
-        );
         println!(
             "total cells used in special lookup advice columns: {}",
             self.ctx.borrow().cells_to_lookup.len()
         );
-        println!("maximum rows used by a special lookup advice column: {}", lookup_rows);
-        println!("total cells used in fixed columns: {}", total_fixed);
-        println!("maximum rows used by a fixed column: {}", const_rows);
     }
 
     pub fn assign_const_scalar(self: &Rc<Self>, constant: C::Scalar) -> Scalar<'a, 'b, C> {
@@ -853,7 +839,7 @@ impl<'a, 'b, C: CurveAffine> ScalarLoader<C::Scalar> for Rc<Halo2Loader<'a, 'b, 
             Value::Assigned(assigned) => Existing(assigned),
         }));
         b.extend(values.iter().map(|(c, _)| Constant(*c)));
-        let (_, _, sum, _) = self.gate().inner_product(&mut self.ctx_mut(), &a, &b).unwrap();
+        let (_, _, sum) = self.gate().inner_product(&mut self.ctx_mut(), &a, &b).unwrap();
 
         self.scalar(Value::Assigned(sum))
     }

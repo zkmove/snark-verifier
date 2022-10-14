@@ -14,8 +14,8 @@ use crate::{
     Error,
 };
 use ::poseidon::Poseidon;
+use halo2_base::utils::{biguint_to_fe, fe_to_biguint};
 use halo2_curves::group::GroupEncoding;
-use halo2_ecc::utils::{biguint_to_fe, fe_to_biguint};
 use halo2_proofs::{circuit, transcript::EncodedChallenge};
 use std::{
     io::{self, Read, Write},

@@ -26,11 +26,8 @@ use crate::{
     verifier::{self, PlonkVerifier},
 };
 use ark_std::{end_timer, start_timer};
+use halo2_base::{fields::fp::FpConfig, Context, ContextParams};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
-use halo2_ecc::{
-    fields::fp::FpConfig,
-    gates::{Context, ContextParams},
-};
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{self, create_proof, verify_proof, Circuit},
@@ -307,9 +304,10 @@ impl Circuit<Fr> for Accumulation {
                 let ctx = Context::new(
                     region,
                     ContextParams {
-                        num_advice: config.base_field_config.range.gate.num_advice,
-                        using_simple_floor_planner,
-                        first_pass,
+                        num_advice: vec![(
+                            config.base_field_config.range.context_id.clone(),
+                            config.base_field_config.range.gate.num_advice,
+                        )],
                     },
                 );
 

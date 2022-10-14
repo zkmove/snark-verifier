@@ -774,13 +774,14 @@ impl Halo2VerifierCircuitConfig {
         let base_field_config = halo2_ecc::fields::fp::FpConfig::configure(
             meta,
             params.strategy,
-            params.num_advice,
-            params.num_lookup_advice,
+            &[params.num_advice],
+            &[params.num_lookup_advice],
             params.num_fixed,
             params.lookup_bits,
             params.limb_bits,
             params.num_limbs,
-            halo2_ecc::utils::modulus::<Fq>(),
+            halo2_base::utils::modulus::<Fq>(),
+            "verifier".to_string(),
         );
 
         let instance = meta.instance_column();
