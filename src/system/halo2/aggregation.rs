@@ -20,21 +20,16 @@ use crate::{
     Protocol,
 };
 use ark_std::{end_timer, start_timer};
-use halo2_curves::{
-    bn256::{Bn256, Fq, Fr, G1Affine},
-    group::ff::PrimeField,
-};
-use halo2_ecc::{
-    fields::fp::FpConfig,
-    gates::{Context, ContextParams},
-};
+use halo2_curves::bn256::{Bn256, Fr, G1Affine};
+pub use halo2_ecc::gates::{Context, ContextParams};
+use halo2_ecc::utils::{biguint_to_fe, fe_to_biguint};
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::{
         self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ProvingKey, VerifyingKey,
     },
     poly::{
-        commitment::ParamsProver,
+        commitment::{Params, ParamsProver},
         kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::{ProverSHPLONK, VerifierSHPLONK},
@@ -45,29 +40,31 @@ use halo2_proofs::{
     transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
 };
 use itertools::Itertools;
+use num_bigint::BigUint;
+use num_traits::Num;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use std::{
     fs::{self, File},
-    io::{BufReader, Cursor, Read, Write},
+    io::{BufReader, BufWriter, Cursor, Read, Write},
     path::Path,
     rc::Rc,
 };
 
-const T: usize = 5;
-const RATE: usize = 4;
-const R_F: usize = 8;
-const R_P: usize = 60;
+pub const T: usize = 5;
+pub const RATE: usize = 4;
+pub const R_F: usize = 8;
+pub const R_P: usize = 60;
 
-type Halo2Loader<'a, 'b> = loader::halo2::Halo2Loader<'a, 'b, G1Affine>;
+pub type Halo2Loader<'a, 'b> = loader::halo2::Halo2Loader<'a, 'b, G1Affine>;
 pub type PoseidonTranscript<L, S, B> =
     system::halo2::transcript::halo2::PoseidonTranscript<G1Affine, L, S, B, T, RATE, R_F, R_P>;
 
-type Pcs = Kzg<Bn256, Bdfg21>;
-type Svk = KzgSuccinctVerifyingKey<G1Affine>;
-type As = KzgAs<Pcs>;
-type AsPk = KzgAsProvingKey<G1Affine>;
-type AsVk = KzgAsVerifyingKey;
-type Plonk = verifier::Plonk<Pcs, LimbsEncoding<LIMBS, BITS>>;
+pub type Pcs = Kzg<Bn256, Bdfg21>;
+pub type Svk = KzgSuccinctVerifyingKey<G1Affine>;
+pub type As = KzgAs<Pcs>;
+pub type AsPk = KzgAsProvingKey<G1Affine>;
+pub type AsVk = KzgAsVerifyingKey;
+pub type Plonk = verifier::Plonk<Pcs, LimbsEncoding<LIMBS, BITS>>;
 
 pub struct Snark {
     protocol: Protocol<G1Affine>,
@@ -78,6 +75,15 @@ pub struct Snark {
 impl Snark {
     pub fn new(protocol: Protocol<G1Affine>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) -> Self {
         Self { protocol, instances, proof }
+    }
+    pub fn protocol(&self) -> &Protocol<G1Affine> {
+        &self.protocol
+    }
+    pub fn instances(&self) -> &[Vec<Fr>] {
+        &self.instances
+    }
+    pub fn proof(&self) -> &[u8] {
+        &self.proof
     }
 }
 
@@ -103,7 +109,7 @@ pub struct SnarkWitness {
 }
 
 impl SnarkWitness {
-    fn without_witnesses(&self) -> Self {
+    pub fn without_witnesses(&self) -> Self {
         SnarkWitness {
             protocol: self.protocol.clone(),
             instances: self
@@ -115,7 +121,7 @@ impl SnarkWitness {
         }
     }
 
-    fn proof(&self) -> Value<&[u8]> {
+    pub fn proof(&self) -> Value<&[u8]> {
         self.proof.as_ref().map(Vec::as_slice)
     }
 }
@@ -184,7 +190,7 @@ pub fn aggregate<'a, 'b>(
 pub struct AggregationCircuit {
     svk: Svk,
     snarks: Vec<SnarkWitness>,
-    instances: Vec<Fr>,
+    pub instances: Vec<Fr>,
     as_vk: AsVk,
     as_proof: Value<Vec<u8>>,
     expose_target_instances: bool,
@@ -259,59 +265,14 @@ impl AggregationCircuit {
     pub fn as_proof(&self) -> Value<&[u8]> {
         self.as_proof.as_ref().map(Vec::as_slice)
     }
-}
 
-impl Circuit<Fr> for AggregationCircuit {
-    type Config = Halo2VerifierCircuitConfig;
-    type FloorPlanner = SimpleFloorPlanner;
-
-    fn without_witnesses(&self) -> Self {
-        Self {
-            svk: self.svk,
-            snarks: self.snarks.iter().map(SnarkWitness::without_witnesses).collect(),
-            instances: Vec::new(),
-            as_vk: self.as_vk,
-            as_proof: Value::unknown(),
-            expose_target_instances: self.expose_target_instances,
-        }
-    }
-
-    fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
-        let path = "./src/configs/verify_circuit.config";
-        let params_str = fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
-        let params: Halo2VerifierCircuitConfigParams =
-            serde_json::from_str(params_str.as_str()).unwrap();
-
-        assert!(
-            params.limb_bits == BITS && params.num_limbs == LIMBS,
-            "For now we fix limb_bits = {}, otherwise change code",
-            BITS
-        );
-        let base_field_config = FpConfig::configure(
-            meta,
-            params.strategy,
-            params.num_advice,
-            params.num_lookup_advice,
-            params.num_fixed,
-            params.lookup_bits,
-            params.limb_bits,
-            params.num_limbs,
-            halo2_ecc::utils::modulus::<Fq>(),
-        );
-
-        let instance = meta.instance_column();
-        meta.enable_equality(instance);
-
-        Self::Config { base_field_config, instance }
-    }
-
-    fn synthesize(
+    pub fn synthesize_proof(
         &self,
-        config: Self::Config,
-        mut layouter: impl Layouter<Fr>,
-    ) -> Result<(), plonk::Error> {
-        let mut layouter = layouter.namespace(|| "aggregation");
-        config.base_field_config.load_lookup_table(&mut layouter)?;
+        config: Halo2VerifierCircuitConfig,
+        layouter: &mut impl Layouter<Fr>,
+        instance_equalities: Vec<(usize, usize)>,
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, plonk::Error> {
+        config.base_field_config.load_lookup_table(layouter)?;
 
         // Need to trick layouter to skip first pass in get shape mode
         let using_simple_floor_planner = true;
@@ -343,20 +304,60 @@ impl Circuit<Fr> for AggregationCircuit {
                     self.expose_target_instances,
                 );
 
+                for &(i, j) in &instance_equalities {
+                    loader
+                        .ctx_mut()
+                        .region
+                        .constrain_equal(instances[i].cell(), instances[j].cell())?;
+                }
                 // REQUIRED STEP
                 loader.finalize();
                 assigned_instances = Some(instances);
-
                 Ok(())
             },
         )?;
+        Ok(assigned_instances.unwrap())
+    }
+}
+
+impl Circuit<Fr> for AggregationCircuit {
+    type Config = Halo2VerifierCircuitConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self {
+            svk: self.svk,
+            snarks: self.snarks.iter().map(SnarkWitness::without_witnesses).collect(),
+            instances: Vec::new(),
+            as_vk: self.as_vk,
+            as_proof: Value::unknown(),
+            expose_target_instances: self.expose_target_instances,
+        }
+    }
+
+    fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
+        let path = "./configs/verify_circuit.config";
+        let params_str = fs::read_to_string(path).expect(format!("{} should exist", path).as_str());
+        let params: Halo2VerifierCircuitConfigParams =
+            serde_json::from_str(params_str.as_str()).unwrap();
+
+        Halo2VerifierCircuitConfig::configure(meta, params)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), plonk::Error> {
+        let config_instance = config.instance.clone();
+        let assigned_instances = self.synthesize_proof(config, &mut layouter, vec![])?;
         Ok({
             // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
             let mut layouter = layouter.namespace(|| "expose");
-            for (i, assigned_instance) in assigned_instances.unwrap().iter().enumerate() {
+            for (i, assigned_instance) in assigned_instances.iter().enumerate() {
                 layouter.constrain_instance(
                     assigned_instance.cell().clone(),
-                    config.instance,
+                    config_instance,
                     i,
                 )?;
             }
@@ -375,7 +376,7 @@ pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
     circuit: &ConcreteCircuit,
     name: &str,
 ) -> VerifyingKey<G1Affine> {
-    let path = format!("./data/{}.vkey", name);
+    let path = format!("./data/{}_{}.vkey", name, params.k());
     match File::open(path.as_str()) {
         Ok(f) => {
             println!("Reading vkey from {}", path);
@@ -388,7 +389,8 @@ pub fn gen_vk<ConcreteCircuit: Circuit<Fr>>(
             let vk_time = start_timer!(|| "vkey");
             let vk = keygen_vk(params, circuit).unwrap();
             end_timer!(vk_time);
-            let mut f = File::create(path.as_str()).unwrap();
+            let mut f = BufWriter::new(File::create(path.as_str()).unwrap());
+            println!("Writing vkey to {}", path);
             vk.write(&mut f).unwrap();
             vk
         }
@@ -400,7 +402,7 @@ pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
     circuit: &ConcreteCircuit,
     name: &str,
 ) -> ProvingKey<G1Affine> {
-    let path = format!("./data/{}.pkey", name);
+    let path = format!("./data/{}_{}.pkey", name, params.k());
     match File::open(path.as_str()) {
         Ok(f) => {
             println!("Reading pkey from {}", path);
@@ -414,7 +416,8 @@ pub fn gen_pk<ConcreteCircuit: Circuit<Fr>>(
             let pk_time = start_timer!(|| "pkey");
             let pk = keygen_pk(params, vk, circuit).unwrap();
             end_timer!(pk_time);
-            let mut f = File::create(path.as_str()).unwrap();
+            let mut f = BufWriter::new(File::create(path.as_str()).unwrap());
+            println!("Writing pkey to {}", path);
             pk.write(&mut f).unwrap();
             pk
         }
@@ -441,54 +444,51 @@ pub fn read_instances<T: TargetCircuit>(path: &str) -> Option<Vec<Vec<Vec<Fr>>>>
     }
     let f = f.unwrap();
     let reader = BufReader::new(f);
-    let instances_bytes: Vec<Vec<Vec<u8>>> = serde_json::from_reader(reader).unwrap();
-    let mut ret = vec![];
-    for circuit_instances in instances_bytes.into_iter() {
-        let mut ret1 = vec![];
-        for instance_column in circuit_instances.into_iter() {
-            let mut ret2 = vec![];
-            assert_eq!(instance_column.len() % 32, 0);
-            for id in (0..instance_column.len()).step_by(32) {
-                let mut repr = [0u8; 32];
-                repr.clone_from_slice(&instance_column[id..id + 32]);
-                ret2.push(Fr::from_repr(repr).unwrap());
-            }
-            ret1.push(ret2);
-        }
-        ret.push(ret1);
-    }
+    let instances_str: Vec<Vec<Vec<String>>> = serde_json::from_reader(reader).unwrap();
+    let ret = instances_str
+        .into_iter()
+        .map(|circuit_instances| {
+            circuit_instances
+                .into_iter()
+                .map(|instance_column| {
+                    instance_column
+                        .iter()
+                        .map(|str| {
+                            biguint_to_fe::<Fr>(&BigUint::from_str_radix(str.as_str(), 16).unwrap())
+                        })
+                        .collect_vec()
+                })
+                .collect_vec()
+        })
+        .collect_vec();
     Some(ret)
 }
 
 pub fn write_instances(instances: &Vec<Vec<Vec<Fr>>>, path: &str) {
-    let mut bytes = vec![];
+    let mut hex_strings = vec![];
     for circuit_instances in instances.iter() {
-        bytes.push(
+        hex_strings.push(
             circuit_instances
                 .iter()
                 .map(|instance_column| {
-                    instance_column.iter().flat_map(|x| x.to_repr()).collect_vec()
+                    instance_column.iter().map(|x| fe_to_biguint(x).to_str_radix(16)).collect_vec()
                 })
                 .collect_vec(),
         );
     }
-    let f = File::create(path).unwrap();
-    serde_json::to_writer(f, &bytes).unwrap();
+    let f = BufWriter::new(File::create(path).unwrap());
+    serde_json::to_writer(f, &hex_strings).unwrap();
 }
 
 pub trait TargetCircuit {
-    const TARGET_CIRCUIT_K: u32;
-    const PUBLIC_INPUT_SIZE: usize;
     const N_PROOFS: usize;
     const NAME: &'static str;
 
     type Circuit: Circuit<Fr>;
-
-    fn default_circuit() -> Self::Circuit;
-    fn instances() -> Vec<Vec<Fr>>;
 }
 
 pub fn create_snark_shplonk<T: TargetCircuit>(
+    target_circuit_k: u32,
     circuits: Vec<T::Circuit>,
     instances: Vec<Vec<Vec<Fr>>>, // instances[i][j][..] is the i-th circuit's j-th instance column
     accumulator_indices: Option<Vec<(usize, usize)>>,
@@ -502,11 +502,11 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     } else {
         Config::kzg().set_zk(true).with_num_proof(T::N_PROOFS)
     };
-    let params = gen_srs(T::TARGET_CIRCUIT_K);
+    let params = gen_srs(target_circuit_k);
 
-    let pk = gen_pk(&params, &T::default_circuit(), T::NAME);
-    // num_instance[i] is number of instance columns in i-th circuit
-    let num_instance = instances.iter().map(|instances| instances.len()).collect();
+    let pk = gen_pk(&params, &circuits[0], T::NAME);
+    // num_instance[i] is length of the i-th instance columns in circuit 0 (all circuits should have same shape of instances)
+    let num_instance = instances[0].iter().map(|instance_column| instance_column.len()).collect();
     let protocol = compile(&params, pk.get_vk(), config.with_num_instance(num_instance));
 
     // usual shenanigans to turn nested Vec into nested slice
@@ -518,17 +518,20 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     // TODO: need to cache the instances as well!
 
     let proof = {
-        let path = format!("./data/proof_{}.dat", T::NAME);
-        let instance_path = format!("./data/instances_{}.dat", T::NAME);
-        if let Some(cached_instances) = read_instances::<T>(instance_path.as_str()) && Path::new(path.as_str()).exists() && cached_instances == instances {
+        let path = format!("./data/proof_{}_{}.dat", T::NAME, params.k());
+        let instance_path = format!("./data/instances_{}_{}.dat", T::NAME, params.k());
+        let cached_instances = read_instances::<T>(instance_path.as_str());
+        if cached_instances.is_some()
+            && Path::new(path.as_str()).exists()
+            && cached_instances.unwrap() == instances
+        {
             let mut file = File::open(path.as_str()).unwrap();
             let mut buf = vec![];
             file.read_to_end(&mut buf).unwrap();
             buf
         } else {
             let proof_time = start_timer!(|| "create proof");
-            let mut transcript =
-                PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
+            let mut transcript = PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
             create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, ChallengeScalar<_>, _, _, _>(
                 &params,
                 &pk,

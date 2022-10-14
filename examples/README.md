@@ -1,6 +1,6 @@
 In `plonk-verifier` root directory:
 
-1. Create `./src/configs/verify_circuit.config`
+1. Create `./configs/verify_circuit.config`
 
 2. Run
 

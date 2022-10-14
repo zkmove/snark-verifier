@@ -35,7 +35,7 @@ use plonk_verifier::{
     verifier::{self, PlonkVerifier},
 };
 use rand::rngs::OsRng;
-use std::{io::Cursor, rc::Rc};
+use std::{fs, io::Cursor, rc::Rc};
 
 const LIMBS: usize = 3;
 const BITS: usize = 88;
@@ -235,7 +235,7 @@ fn gen_aggregation_evm_verifier(
 
 fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) {
     let calldata = encode_calldata(&instances, &proof);
-    write_bytes("./data/verifier_calldata.dat", &calldata);
+    fs::write("./data/verifier_calldata.dat", hex::encode(&calldata)).unwrap();
     let success = {
         let mut evm = ExecutorBuilder::default()
             .with_gas_limit(u64::MAX.into())
@@ -255,7 +255,7 @@ fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>)
 }
 
 pub fn load_verify_circuit_degree() -> u32 {
-    let path = "./src/configs/verify_circuit.config";
+    let path = "./configs/verify_circuit.config";
     let params_str =
         std::fs::read_to_string(path).expect(format!("{} file should exist", path).as_str());
     let params: plonk_verifier::system::halo2::Halo2VerifierCircuitConfigParams =
@@ -264,23 +264,16 @@ pub fn load_verify_circuit_degree() -> u32 {
 }
 
 impl TargetCircuit for StandardPlonk {
-    const TARGET_CIRCUIT_K: u32 = 8;
-    const PUBLIC_INPUT_SIZE: usize = 1;
     const N_PROOFS: usize = 1;
     const NAME: &'static str = "standard_plonk";
 
     type Circuit = Self;
-    fn default_circuit() -> Self::Circuit {
-        StandardPlonk::rand(OsRng)
-    }
-    fn instances() -> Vec<Vec<Fr>> {
-        unimplemented!()
-    }
 }
 
 fn main() {
     let app_circuit = StandardPlonk::rand(OsRng);
     let (_, snark) = create_snark_shplonk::<StandardPlonk>(
+        8,
         vec![app_circuit.clone()],
         vec![vec![vec![app_circuit.0]]],
         None,
@@ -301,11 +294,12 @@ fn main() {
         AggregationCircuit::accumulator_indices(),
     );
     end_timer!(deploy_time);
-    write_bytes("./data/verifier_bytecode.dat", &deployment_code);
+    fs::write("./data/verifier_bytecode.dat", hex::encode(&deployment_code)).unwrap();
 
     // use different input snarks to test instances etc
     let app_circuit = StandardPlonk::rand(OsRng);
     let (_, snark) = create_snark_shplonk::<StandardPlonk>(
+        8,
         vec![app_circuit.clone()],
         vec![vec![vec![app_circuit.0]]],
         None,

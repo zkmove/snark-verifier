@@ -88,7 +88,7 @@ where
         self.ctx.borrow()
     }
 
-    pub(super) fn ctx_mut(&self) -> impl DerefMut<Target = Context<'b, C::Scalar>> + '_ {
+    pub(crate) fn ctx_mut(&self) -> impl DerefMut<Target = Context<'b, C::Scalar>> + '_ {
         self.ctx.borrow_mut()
     }
 
