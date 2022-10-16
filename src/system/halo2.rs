@@ -47,8 +47,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn kzg() -> Self {
-        Self { zk: true, query_instance: false, num_proof: 1, ..Default::default() }
+    pub fn kzg(query_instance: bool) -> Self {
+        Self { zk: true, query_instance, num_proof: 1, ..Default::default() }
     }
 
     pub fn ipa() -> Self {

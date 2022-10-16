@@ -44,7 +44,8 @@ where
     where
         MOS: Decider<C, L>,
     {
-        let accumulators = Self::succinct_verify(svk, protocol, instances, proof)?;
+        let accumulators = Self::succinct_verify(svk, protocol, instances, proof)
+            .expect("succinct verify should not fail");
         let output = MOS::decide_all(dk, accumulators);
         Ok(output)
     }

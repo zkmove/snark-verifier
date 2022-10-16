@@ -17,13 +17,17 @@ use halo2_proofs::{
         },
         Rotation, VerificationStrategy,
     },
-    transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
+    transcript::{
+        Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+    },
 };
 use itertools::Itertools;
 use plonk_verifier::{
     loader::evm::{encode_calldata, EvmLoader},
     pcs::kzg::{Gwc19, Kzg},
-    system::halo2::{compile, transcript::evm::EvmTranscript, Config},
+    system::halo2::{
+        aggregation::KZG_QUERY_INSTANCE, compile, transcript::evm::EvmTranscript, Config,
+    },
     verifier::{self, PlonkVerifier},
 };
 use rand::{rngs::OsRng, RngCore};
@@ -71,17 +75,7 @@ impl StandardPlonkConfig {
             },
         );
 
-        StandardPlonkConfig {
-            a,
-            b,
-            c,
-            q_a,
-            q_b,
-            q_c,
-            q_ab,
-            constant,
-            instance,
-        }
+        StandardPlonkConfig { a, b, c, q_a, q_b, q_c, q_ab, constant, instance }
     }
 }
 
@@ -127,13 +121,9 @@ impl Circuit<Fr> for StandardPlonk {
                 region.assign_fixed(|| "", config.q_a, 0, || Value::known(-Fr::one()))?;
 
                 region.assign_advice(|| "", config.a, 1, || Value::known(-Fr::from(5)))?;
-                for (idx, column) in (1..).zip([
-                    config.q_a,
-                    config.q_b,
-                    config.q_c,
-                    config.q_ab,
-                    config.constant,
-                ]) {
+                for (idx, column) in
+                    (1..).zip([config.q_a, config.q_b, config.q_c, config.q_ab, config.constant])
+                {
                     region.assign_fixed(|| "", column, 1, || Value::known(Fr::from(idx)))?;
                 }
 
@@ -156,20 +146,53 @@ fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<
     keygen_pk(params, vk, circuit).unwrap()
 }
 
-fn gen_proof<C: Circuit<Fr>>(
+fn gen_proof<C: Circuit<Fr> + Clone>(
     params: &ParamsKZG<Bn256>,
     pk: &ProvingKey<G1Affine>,
     circuit: C,
     instances: Vec<Vec<Fr>>,
 ) -> Vec<u8> {
-    MockProver::run(params.k(), &circuit, instances.clone())
-        .unwrap()
-        .assert_satisfied();
+    MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
 
-    let instances = instances
-        .iter()
-        .map(|instances| instances.as_slice())
-        .collect_vec();
+    // For testing purposes:
+    // Native verify
+    // Uncomment to test if evm verifier fails silently
+    /*{
+        let proof = {
+            let mut transcript = Blake2bWrite::init(Vec::new());
+            create_proof::<
+                KZGCommitmentScheme<Bn256>,
+                ProverGWC<_>,
+                Challenge255<G1Affine>,
+                _,
+                Blake2bWrite<Vec<u8>, G1Affine, Challenge255<G1Affine>>,
+                _,
+            >(
+                params,
+                pk,
+                &[circuit.clone()],
+                &[&[instances[0].as_slice()]],
+                OsRng,
+                &mut transcript,
+            )
+            .unwrap();
+            transcript.finalize()
+        };
+        let svk = params.get_g()[0].into();
+        let dk = (params.g2(), params.s_g2()).into();
+        let protocol = compile(
+            params,
+            pk.get_vk(),
+            Config::kzg(KZG_QUERY_INSTANCE).with_num_instance(vec![instances[0].len()]),
+        );
+        let mut transcript = Blake2bRead::<_, G1Affine, _>::init(proof.as_slice());
+        let instances = &[instances[0].to_vec()];
+        let proof = Plonk::read_proof(&svk, &protocol, instances, &mut transcript).unwrap();
+        assert!(Plonk::verify(&svk, &dk, &protocol, instances, &proof).unwrap());
+        println!("==Native verify passed==");
+    }*/
+
+    let instances = instances.iter().map(|instances| instances.as_slice()).collect_vec();
     let proof = {
         let mut transcript = TranscriptWriterBuffer::<_, G1Affine, _>::init(Vec::new());
         create_proof::<KZGCommitmentScheme<Bn256>, ProverGWC<_>, _, _, EvmTranscript<_, _, _, _>, _>(
@@ -212,7 +235,7 @@ fn gen_evm_verifier(
     let protocol = compile(
         params,
         vk,
-        Config::kzg().with_num_instance(num_instance.clone()),
+        Config::kzg(KZG_QUERY_INSTANCE).with_num_instance(num_instance.clone()),
     );
 
     let loader = EvmLoader::new::<Fq, Fr>();
@@ -233,13 +256,8 @@ fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>)
             .build(Backend::new(MultiFork::new().0, None));
 
         let caller = Address::from_low_u64_be(0xfe);
-        let verifier = evm
-            .deploy(caller, deployment_code.into(), 0.into(), None)
-            .unwrap()
-            .address;
-        let result = evm
-            .call_raw(caller, verifier, calldata.into(), 0.into())
-            .unwrap();
+        let verifier = evm.deploy(caller, deployment_code.into(), 0.into(), None).unwrap().address;
+        let result = evm.call_raw(caller, verifier, calldata.into(), 0.into()).unwrap();
 
         dbg!(result.gas);
 
@@ -253,8 +271,7 @@ fn main() {
 
     let circuit = StandardPlonk::rand(OsRng);
     let pk = gen_pk(&params, &circuit);
-    let deployment_code = gen_evm_verifier(&params, pk.get_vk(), StandardPlonk::num_instance());
-
     let proof = gen_proof(&params, &pk, circuit.clone(), circuit.instances());
+    let deployment_code = gen_evm_verifier(&params, pk.get_vk(), StandardPlonk::num_instance());
     evm_verify(deployment_code, circuit.instances(), proof);
 }

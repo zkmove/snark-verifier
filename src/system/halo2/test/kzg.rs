@@ -22,10 +22,12 @@ pub fn setup<M: MultiMillerLoop>(k: u32) -> ParamsKZG<M> {
 
 macro_rules! halo2_kzg_config {
     ($zk:expr, $num_proof:expr) => {
-        $crate::system::halo2::Config::kzg().set_zk($zk).with_num_proof($num_proof)
+        $crate::system::halo2::Config::kzg(crate::system::halo2::aggregation::KZG_QUERY_INSTANCE)
+            .set_zk($zk)
+            .with_num_proof($num_proof)
     };
     ($zk:expr, $num_proof:expr, $accumulator_indices:expr) => {
-        $crate::system::halo2::Config::kzg()
+        $crate::system::halo2::Config::kzg(crate::system::halo2::aggregation::KZG_QUERY_INSTANCE)
             .set_zk($zk)
             .with_num_proof($num_proof)
             .with_accumulator_indices($accumulator_indices)

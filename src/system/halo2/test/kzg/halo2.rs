@@ -26,8 +26,9 @@ use crate::{
     verifier::{self, PlonkVerifier},
 };
 use ark_std::{end_timer, start_timer};
-use halo2_base::{fields::fp::FpConfig, Context, ContextParams};
+use halo2_base::{Context, ContextParams};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
+use halo2_ecc::fields::fp::FpConfig;
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{self, create_proof, verify_proof, Circuit},
@@ -267,13 +268,14 @@ impl Circuit<Fr> for Accumulation {
         let base_field_config = FpConfig::configure(
             meta,
             params.strategy,
-            params.num_advice,
-            params.num_lookup_advice,
+            &[params.num_advice],
+            &[params.num_lookup_advice],
             params.num_fixed,
             params.lookup_bits,
             params.limb_bits,
             params.num_limbs,
-            halo2_ecc::utils::modulus::<Fq>(),
+            halo2_base::utils::modulus::<Fq>(),
+            "verify".to_string(),
         );
 
         let instance = meta.instance_column();

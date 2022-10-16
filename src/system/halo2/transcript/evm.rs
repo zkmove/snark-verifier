@@ -4,6 +4,7 @@ use crate::{
         native::{self, NativeLoader},
         Loader,
     },
+    system::halo2::aggregation::KZG_QUERY_INSTANCE,
     util::{
         arithmetic::{Coordinates, CurveAffine, PrimeField},
         transcript::{Transcript, TranscriptRead},
@@ -24,6 +25,7 @@ pub struct EvmTranscript<C: CurveAffine, L: Loader<C>, S, B> {
     loader: L,
     stream: S,
     buf: B,
+    query_instance_reset: bool,
     _marker: PhantomData<C>,
 }
 
@@ -33,16 +35,13 @@ where
     C::Scalar: PrimeField<Repr = [u8; 0x20]>,
 {
     pub fn new(loader: Rc<EvmLoader>) -> Self {
-        let ptr = loader.allocate(0x20);
+        let ptr = if KZG_QUERY_INSTANCE { 0 } else { loader.allocate(0x20) };
         assert_eq!(ptr, 0);
         let mut buf = MemoryChunk::new(ptr);
-        buf.extend(0x20);
-        Self {
-            loader,
-            stream: 0,
-            buf,
-            _marker: PhantomData,
+        if !KZG_QUERY_INSTANCE {
+            buf.extend(0x20);
         }
+        Self { loader, stream: 0, buf, query_instance_reset: false, _marker: PhantomData }
     }
 
     pub fn load_instances(&mut self, num_instance: Vec<usize>) -> Vec<Vec<Scalar>> {
@@ -73,11 +72,7 @@ where
     fn squeeze_challenge(&mut self) -> Scalar {
         let len = if self.buf.len() == 0x20 {
             assert_eq!(self.loader.ptr(), self.buf.end());
-            self.loader
-                .code_mut()
-                .push(1)
-                .push(self.buf.end())
-                .mstore8();
+            self.loader.code_mut().push(1).push(self.buf.end()).mstore8();
             0x21
         } else {
             self.buf.len()
@@ -106,8 +101,18 @@ where
 
     fn common_ec_point(&mut self, ec_point: &EcPoint) -> Result<(), Error> {
         if let Value::Memory(ptr) = ec_point.value() {
-            assert_eq!(self.buf.end(), ptr);
-            self.buf.extend(0x40);
+            // this should never to reached if a vk is first hashed into transcript
+            if KZG_QUERY_INSTANCE && !self.query_instance_reset && self.buf.end() != ptr {
+                self.buf.reset(self.loader.ptr());
+                self.query_instance_reset = true;
+            }
+            if self.buf.end() != ptr {
+                assert!(self.buf.end() > ptr && KZG_QUERY_INSTANCE);
+                self.loader.dup_ec_point(ec_point);
+                self.buf.extend(0x40);
+            } else {
+                self.buf.extend(0x40);
+            }
         } else {
             unreachable!()
         }
@@ -117,6 +122,12 @@ where
     fn common_scalar(&mut self, scalar: &Scalar) -> Result<(), Error> {
         match scalar.value() {
             Value::Constant(_) if self.buf.ptr() == 0 => {
+                if KZG_QUERY_INSTANCE && !self.query_instance_reset {
+                    self.buf.reset(self.loader.ptr());
+                    self.buf.extend(0x20);
+                    self.loader.allocate(0x20);
+                    self.query_instance_reset = true;
+                }
                 self.loader.copy_scalar(scalar, self.buf.ptr());
             }
             Value::Memory(ptr) => {
@@ -158,6 +169,7 @@ where
             loader: NativeLoader,
             stream,
             buf: Vec::new(),
+            query_instance_reset: false,
             _marker: PhantomData,
         }
     }
@@ -177,11 +189,7 @@ where
             .buf
             .iter()
             .cloned()
-            .chain(if self.buf.len() == 0x20 {
-                Some(1)
-            } else {
-                None
-            })
+            .chain(if self.buf.len() == 0x20 { Some(1) } else { None })
             .collect_vec();
         let hash: [u8; 32] = Keccak256::digest(data).into();
         self.buf = hash.to_vec();
@@ -198,8 +206,7 @@ where
             })?;
 
         [coordinates.x(), coordinates.y()].map(|coordinate| {
-            self.buf
-                .extend(coordinate.to_repr().as_ref().iter().rev().cloned());
+            self.buf.extend(coordinate.to_repr().as_ref().iter().rev().cloned());
         });
 
         Ok(())
@@ -225,10 +232,7 @@ where
             .map_err(|err| Error::Transcript(err.kind(), err.to_string()))?;
         data.reverse();
         let scalar = C::Scalar::from_repr_vartime(data).ok_or_else(|| {
-            Error::Transcript(
-                io::ErrorKind::Other,
-                "Invalid scalar encoding in proof".to_string(),
-            )
+            Error::Transcript(io::ErrorKind::Other, "Invalid scalar encoding in proof".to_string())
         })?;
         self.common_scalar(&scalar)?;
         Ok(scalar)
@@ -244,10 +248,8 @@ where
         }
         let x = Option::from(<C::Base as PrimeField>::from_repr(x));
         let y = Option::from(<C::Base as PrimeField>::from_repr(y));
-        let ec_point = x
-            .zip(y)
-            .and_then(|(x, y)| Option::from(C::from_xy(x, y)))
-            .ok_or_else(|| {
+        let ec_point =
+            x.zip(y).and_then(|(x, y)| Option::from(C::from_xy(x, y))).ok_or_else(|| {
                 Error::Transcript(
                     io::ErrorKind::Other,
                     "Invalid elliptic curve point encoding in proof".to_string(),

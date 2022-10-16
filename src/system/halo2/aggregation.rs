@@ -491,27 +491,31 @@ pub trait TargetCircuit {
     type Circuit: Circuit<Fr>;
 }
 
+// this is a toggle that should match the fork of halo2_proofs you are using
+// the current default in PSE/main is `true`, while there is a PR to make it `false`:
+// see https://github.com/privacy-scaling-explorations/halo2/pull/96/files
+pub const KZG_QUERY_INSTANCE: bool = true;
+
 pub fn create_snark_shplonk<T: TargetCircuit>(
-    target_circuit_k: u32,
+    params: &ParamsKZG<Bn256>,
     circuits: Vec<T::Circuit>,
     instances: Vec<Vec<Vec<Fr>>>, // instances[i][j][..] is the i-th circuit's j-th instance column
     accumulator_indices: Option<Vec<(usize, usize)>>,
-) -> (ParamsKZG<Bn256>, Snark) {
+) -> Snark {
     println!("CREATING SNARK FOR: {}", T::NAME);
     let config = if let Some(accumulator_indices) = accumulator_indices {
-        Config::kzg()
+        Config::kzg(KZG_QUERY_INSTANCE)
             .set_zk(true)
             .with_num_proof(T::N_PROOFS)
             .with_accumulator_indices(accumulator_indices)
     } else {
-        Config::kzg().set_zk(true).with_num_proof(T::N_PROOFS)
+        Config::kzg(KZG_QUERY_INSTANCE).set_zk(true).with_num_proof(T::N_PROOFS)
     };
-    let params = gen_srs(target_circuit_k);
 
-    let pk = gen_pk(&params, &circuits[0], T::NAME);
+    let pk = gen_pk(params, &circuits[0], T::NAME);
     // num_instance[i] is length of the i-th instance columns in circuit 0 (all circuits should have same shape of instances)
     let num_instance = instances[0].iter().map(|instance_column| instance_column.len()).collect();
-    let protocol = compile(&params, pk.get_vk(), config.with_num_instance(num_instance));
+    let protocol = compile(params, pk.get_vk(), config.with_num_instance(num_instance));
 
     // usual shenanigans to turn nested Vec into nested slice
     let instances1: Vec<Vec<&[Fr]>> = instances
@@ -537,7 +541,7 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
             let proof_time = start_timer!(|| "create proof");
             let mut transcript = PoseidonTranscript::<NativeLoader, Vec<u8>, _>::init(Vec::new());
             create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, ChallengeScalar<_>, _, _, _>(
-                &params,
+                params,
                 &pk,
                 &circuits,
                 instances2.as_slice(),
@@ -577,5 +581,5 @@ pub fn create_snark_shplonk<T: TargetCircuit>(
     }
     end_timer!(verify_time);
 
-    (params, Snark::new(protocol.clone(), instances.into_iter().flatten().collect_vec(), proof))
+    Snark::new(protocol.clone(), instances.into_iter().flatten().collect_vec(), proof)
 }

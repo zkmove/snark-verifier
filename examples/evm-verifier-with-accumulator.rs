@@ -4,6 +4,7 @@ use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
 use halo2_proofs::{
+    dev::MockProver,
     plonk::{create_proof, verify_proof, Circuit, ProvingKey, VerifyingKey},
     poly::{
         commitment::{Params, ParamsProver},
@@ -14,7 +15,10 @@ use halo2_proofs::{
         },
         VerificationStrategy,
     },
-    transcript::{EncodedChallenge, TranscriptReadBuffer, TranscriptWriterBuffer},
+    transcript::{
+        Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptReadBuffer,
+        TranscriptWriterBuffer,
+    },
 };
 use itertools::Itertools;
 use plonk_verifier::{
@@ -162,7 +166,7 @@ mod application {
 }
 
 fn gen_proof<
-    C: Circuit<Fr>,
+    C: Circuit<Fr> + Clone,
     E: EncodedChallenge<G1Affine>,
     TR: TranscriptReadBuffer<Cursor<Vec<u8>>, G1Affine, E>,
     TW: TranscriptWriterBuffer<Vec<u8>, G1Affine, E>,
@@ -172,7 +176,44 @@ fn gen_proof<
     circuit: C,
     instances: Vec<Vec<Fr>>,
 ) -> Vec<u8> {
-    //MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
+    MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
+    // For testing purposes: Native verify
+    // Uncomment to test if evm verifier fails silently
+    {
+        let proof = {
+            let mut transcript = Blake2bWrite::init(Vec::new());
+            create_proof::<
+                KZGCommitmentScheme<Bn256>,
+                ProverGWC<_>,
+                Challenge255<G1Affine>,
+                _,
+                Blake2bWrite<Vec<u8>, G1Affine, Challenge255<G1Affine>>,
+                _,
+            >(
+                params,
+                pk,
+                &[circuit.clone()],
+                &[&[instances[0].as_slice()]],
+                OsRng,
+                &mut transcript,
+            )
+            .unwrap();
+            transcript.finalize()
+        };
+        let svk = params.get_g()[0].into();
+        let dk = (params.g2(), params.s_g2()).into();
+        let protocol = compile(
+            params,
+            pk.get_vk(),
+            Config::kzg(aggregation::KZG_QUERY_INSTANCE)
+                .with_num_instance(vec![instances[0].len()])
+                .with_accumulator_indices(aggregation::AggregationCircuit::accumulator_indices()),
+        );
+        let mut transcript = Blake2bRead::<_, G1Affine, _>::init(proof.as_slice());
+        let instances = &[instances[0].to_vec()];
+        let proof = Plonk::read_proof(&svk, &protocol, instances, &mut transcript).unwrap();
+        assert!(Plonk::verify(&svk, &dk, &protocol, instances, &proof).unwrap());
+    }
 
     let instances = instances.iter().map(|instances| instances.as_slice()).collect_vec();
     let proof = {
@@ -218,7 +259,7 @@ fn gen_aggregation_evm_verifier(
     let protocol = compile(
         params,
         vk,
-        Config::kzg()
+        Config::kzg(aggregation::KZG_QUERY_INSTANCE)
             .with_num_instance(num_instance.clone())
             .with_accumulator_indices(accumulator_indices),
     );
@@ -271,17 +312,22 @@ impl TargetCircuit for StandardPlonk {
 }
 
 fn main() {
+    let k = load_verify_circuit_degree();
+    let params = gen_srs(k);
+
+    let params_app = {
+        let mut params = params.clone();
+        params.downsize(8);
+        params
+    };
     let app_circuit = StandardPlonk::rand(OsRng);
-    let (_, snark) = create_snark_shplonk::<StandardPlonk>(
-        8,
+    let snark = create_snark_shplonk::<StandardPlonk>(
+        &params_app,
         vec![app_circuit.clone()],
         vec![vec![vec![app_circuit.0]]],
         None,
     );
     let snarks = vec![snark];
-
-    let k = load_verify_circuit_degree();
-    let params = gen_srs(k);
 
     let agg_circuit = AggregationCircuit::new(&params, snarks, true);
     let pk = gen_pk(&params, &agg_circuit, "standard_plonk_agg_circuit");
@@ -298,8 +344,8 @@ fn main() {
 
     // use different input snarks to test instances etc
     let app_circuit = StandardPlonk::rand(OsRng);
-    let (_, snark) = create_snark_shplonk::<StandardPlonk>(
-        8,
+    let snark = create_snark_shplonk::<StandardPlonk>(
+        &params_app,
         vec![app_circuit.clone()],
         vec![vec![vec![app_circuit.0]]],
         None,
