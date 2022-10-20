@@ -172,7 +172,6 @@ where
         let limbs_to_crt = |limbs| {
             let native = OverflowInteger::evaluate(
                 self.gate(),
-                &self.field_chip().bigint_chip,
                 &mut self.ctx_mut(),
                 &limbs,
                 self.field_chip().limb_bits,
