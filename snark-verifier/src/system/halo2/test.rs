@@ -22,7 +22,7 @@ pub fn read_or_create_srs<'a, C: CurveAffine, P: ParamsProver<'a, C>>(
     k: u32,
     setup: impl Fn(u32) -> P,
 ) -> P {
-    let path = format!("{}/k-{}.srs", dir, k);
+    let path = format!("{dir}/k-{k}.srs");
     match fs::File::open(path.as_str()) {
         Ok(mut file) => P::read(&mut file).unwrap(),
         Err(_) => {
@@ -52,7 +52,7 @@ where
     TW: TranscriptWriterBuffer<Vec<u8>, S::Curve, EC>,
     TR: TranscriptReadBuffer<Cursor<Vec<u8>>, S::Curve, EC>,
     EC: EncodedChallenge<S::Curve>,
-    R: RngCore,
+    R: RngCore + Send,
 {
     for (circuit, instances) in circuits.iter().zip(instances.iter()) {
         MockProver::run(
@@ -93,7 +93,7 @@ macro_rules! halo2_prepare {
         use std::iter;
         use $crate::{
             system::halo2::{compile, test::read_or_create_srs},
-            util::{arithmetic::GroupEncoding, Itertools},
+            util::{Itertools},
         };
 
         let params = read_or_create_srs($dir, $k, $setup);
@@ -205,9 +205,8 @@ macro_rules! halo2_native_verify {
         use $crate::halo2_proofs::poly::commitment::ParamsProver;
         use $crate::verifier::PlonkVerifier;
 
-        let proof =
-            <$plonk_verifier>::read_proof($svk, $protocol, $instances, $transcript).unwrap();
-        assert!(<$plonk_verifier>::verify($svk, $dk, $protocol, $instances, &proof).unwrap())
+        let proof = <$plonk_verifier>::read_proof($svk, $protocol, $instances, $transcript);
+        assert!(<$plonk_verifier>::verify($svk, $dk, $protocol, $instances, &proof))
     }};
 }
 

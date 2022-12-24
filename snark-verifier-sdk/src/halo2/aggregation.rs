@@ -1,11 +1,14 @@
 use crate::{Plonk, BITS, LIMBS};
 #[cfg(feature = "display")]
 use ark_std::{end_timer, start_timer};
-use halo2_base::halo2_proofs::{
-    circuit::{Layouter, SimpleFloorPlanner, Value},
-    halo2curves::bn256::{Bn256, Fq, Fr, G1Affine},
-    plonk::{self, Circuit, Column, ConstraintSystem, Instance, Selector},
-    poly::{commitment::ParamsProver, kzg::commitment::ParamsKZG},
+use halo2_base::{
+    halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        halo2curves::bn256::{Bn256, Fq, Fr, G1Affine},
+        plonk::{self, Circuit, Column, ConstraintSystem, Instance, Selector},
+        poly::{commitment::ParamsProver, kzg::commitment::ParamsKZG},
+    },
+    utils::value_to_option,
 };
 use halo2_base::{Context, ContextParams};
 use itertools::Itertools;
@@ -13,7 +16,10 @@ use rand::Rng;
 use snark_verifier::{
     loader::{
         self,
-        halo2::halo2_ecc::{self, ecc::EccChip},
+        halo2::{
+            halo2_ecc::{self, ecc::EccChip},
+            EccInstructions,
+        },
         native::NativeLoader,
     },
     pcs::{
@@ -27,10 +33,10 @@ use std::{fs::File, rc::Rc};
 
 use super::{CircuitExt, PoseidonTranscript, Snark, SnarkWitness, POSEIDON_SPEC};
 
-type Svk = KzgSuccinctVerifyingKey<G1Affine>;
-type BaseFieldEccChip = halo2_ecc::ecc::BaseFieldEccChip<G1Affine>;
-type Halo2Loader<'a> = loader::halo2::Halo2Loader<'a, G1Affine, BaseFieldEccChip>;
-type Shplonk = Plonk<Kzg<Bn256, Bdfg21>>;
+pub type Svk = KzgSuccinctVerifyingKey<G1Affine>;
+pub type BaseFieldEccChip = halo2_ecc::ecc::BaseFieldEccChip<G1Affine>;
+pub type Halo2Loader<'a> = loader::halo2::Halo2Loader<'a, G1Affine, BaseFieldEccChip>;
+pub type Shplonk = Plonk<Kzg<Bn256, Bdfg21>>;
 
 pub fn load_verify_circuit_degree() -> u32 {
     let path = std::env::var("VERIFY_CONFIG")
@@ -42,6 +48,7 @@ pub fn load_verify_circuit_degree() -> u32 {
     params.degree
 }
 
+#[allow(clippy::type_complexity)]
 /// Core function used in `synthesize` to aggregate multiple `snarks`.
 ///  
 /// Returns the assigned instances of previous snarks (all concatenated together) and the new final pair that needs to be verified in a pairing check
@@ -51,7 +58,7 @@ pub fn aggregate<'a, PCS>(
     snarks: &[SnarkWitness],
     as_proof: Value<&'_ [u8]>,
 ) -> (
-    Vec<loader::halo2::Scalar<'a, G1Affine, BaseFieldEccChip>>,
+    Vec<<BaseFieldEccChip as EccInstructions<'a, G1Affine>>::AssignedScalar>,
     KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>>,
 )
 where
@@ -71,7 +78,7 @@ where
     };
 
     // TODO pre-allocate capacity better
-    let mut previous_instances = vec![];
+    let mut previous_instances = Vec::new();
     let mut transcript = PoseidonTranscript::<Rc<Halo2Loader<'a>>, _>::from_spec(
         loader,
         Value::unknown(),
@@ -88,12 +95,11 @@ where
             // read the transcript and perform Fiat-Shamir
             // run through verification computation and produce the final pair `succinct`
             transcript.new_stream(snark.proof());
-            let proof =
-                Plonk::<PCS>::read_proof(svk, &protocol, &instances, &mut transcript).unwrap();
-            let accumulator =
-                Plonk::<PCS>::succinct_verify(svk, &protocol, &instances, &proof).unwrap();
+            let proof = Plonk::<PCS>::read_proof(svk, &protocol, &instances, &mut transcript);
+            let accumulator = Plonk::<PCS>::succinct_verify(svk, &protocol, &instances, &proof);
 
-            previous_instances.extend(instances.into_iter().flatten());
+            previous_instances
+                .extend(instances.into_iter().flatten().map(|scalar| scalar.into_assigned()));
 
             accumulator
         })
@@ -123,7 +129,7 @@ pub struct AggregationConfigParams {
     pub num_limbs: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AggregationConfig {
     pub base_field_config: halo2_ecc::fields::fp::FpConfig<Fr, Fq>,
     pub instance: Column<Instance>,
@@ -185,7 +191,7 @@ impl AggregationCircuit {
         params: &ParamsKZG<Bn256>,
         snarks: impl IntoIterator<Item = Snark>,
         transcript_write: &mut PoseidonTranscript<NativeLoader, Vec<u8>>,
-        rng: &mut impl Rng,
+        rng: impl Rng + Send,
     ) -> Self {
         let svk = params.get_g()[0].into();
         let snarks = snarks.into_iter().collect_vec();
@@ -203,9 +209,8 @@ impl AggregationCircuit {
                     &snark.protocol,
                     &snark.instances,
                     &mut transcript_read,
-                )
-                .unwrap();
-                Shplonk::succinct_verify(&svk, &snark.protocol, &snark.instances, &proof).unwrap()
+                );
+                Shplonk::succinct_verify(&svk, &snark.protocol, &snark.instances, &proof)
             })
             .collect_vec();
 
@@ -233,16 +238,16 @@ impl AggregationCircuit {
         }
     }
 
-    pub fn accumulator_indices() -> Vec<(usize, usize)> {
-        (0..4 * LIMBS).map(|idx| (0, idx)).collect()
+    pub fn instance(&self) -> Vec<Fr> {
+        self.instances.clone()
     }
 
-    pub fn num_instance() -> Vec<usize> {
-        vec![4 * LIMBS]
+    pub fn succinct_verifying_key(&self) -> &Svk {
+        &self.svk
     }
 
-    pub fn instances(&self) -> Vec<Vec<Fr>> {
-        vec![self.instances.clone()]
+    pub fn snarks(&self) -> &[SnarkWitness] {
+        &self.snarks
     }
 
     pub fn as_proof(&self) -> Value<&[u8]> {
@@ -251,13 +256,14 @@ impl AggregationCircuit {
 }
 
 impl CircuitExt<Fr> for AggregationCircuit {
-    fn num_instance() -> Vec<usize> {
+    fn extra_params(&self) -> Self::ExtraCircuitParams {}
+    fn num_instance(_: &()) -> Vec<usize> {
         // [..lhs, ..rhs]
         vec![4 * LIMBS]
     }
 
     fn instances(&self) -> Vec<Vec<Fr>> {
-        vec![self.instances.clone()]
+        vec![self.instance()]
     }
 
     fn accumulator_indices() -> Option<Vec<(usize, usize)>> {
@@ -298,78 +304,200 @@ impl Circuit<Fr> for AggregationCircuit {
         config: Self::Config,
         mut layouter: impl Layouter<Fr>,
     ) -> Result<(), plonk::Error> {
-        config.range().load_lookup_table(&mut layouter)?;
-
-        // assume using simple floor planner
+        #[cfg(feature = "display")]
+        let witness_time = start_timer!(|| "synthesize | Aggregation Circuit");
+        config.range().load_lookup_table(&mut layouter).expect("load range lookup table");
         let mut first_pass = halo2_base::SKIP_FIRST_PASS;
-        let mut assigned_instances = vec![];
+        let mut instances = vec![];
+        layouter
+            .assign_region(
+                || "",
+                |region| {
+                    if first_pass {
+                        first_pass = false;
+                        return Ok(());
+                    }
+                    let ctx = Context::new(
+                        region,
+                        ContextParams {
+                            max_rows: config.gate().max_rows,
+                            num_context_ids: 1,
+                            fixed_columns: config.gate().constants.clone(),
+                        },
+                    );
 
-        layouter.assign_region(
-            || "",
-            |region| {
-                if first_pass {
-                    first_pass = false;
-                    return Ok(());
-                }
-                #[cfg(feature = "display")]
-                let witness_time = start_timer!(|| "Witness Collection");
-                let ctx = Context::new(
-                    region,
-                    ContextParams {
-                        max_rows: config.gate().max_rows,
-                        num_context_ids: 1,
-                        fixed_columns: config.gate().constants.clone(),
-                    },
-                );
+                    let ecc_chip = config.ecc_chip();
+                    let loader = Halo2Loader::new(ecc_chip, ctx);
+                    let (_, KzgAccumulator { lhs, rhs }) = aggregate::<Kzg<Bn256, Bdfg21>>(
+                        &self.svk,
+                        &loader,
+                        &self.snarks,
+                        self.as_proof(),
+                    );
 
-                let ecc_chip = config.ecc_chip();
-                let loader = Halo2Loader::new(ecc_chip, ctx);
-                let (_, KzgAccumulator { lhs, rhs }) = aggregate::<Kzg<Bn256, Bdfg21>>(
-                    &self.svk,
-                    &loader,
-                    &self.snarks,
-                    self.as_proof(),
-                );
+                    let lhs = lhs.assigned();
+                    let rhs = rhs.assigned();
 
-                let lhs = lhs.assigned();
-                let rhs = rhs.assigned();
-
-                config.base_field_config.finalize(&mut loader.ctx_mut());
-                #[cfg(feature = "display")]
-                println!("Total advice cells: {}", loader.ctx().total_advice);
-                #[cfg(feature = "display")]
-                println!("Advice columns used: {}", loader.ctx().advice_alloc[0][0].0 + 1);
-
-                assigned_instances = lhs
-                    .x
-                    .truncation
-                    .limbs
-                    .iter()
-                    .chain(lhs.y.truncation.limbs.iter())
-                    .chain(rhs.x.truncation.limbs.iter())
-                    .chain(rhs.y.truncation.limbs.iter())
-                    .map(|assigned| {
-                        #[cfg(feature = "halo2-axiom")]
-                        {
-                            *assigned.cell()
-                        }
-                        #[cfg(feature = "halo2-pse")]
-                        {
-                            assigned.cell()
-                        }
-                    })
-                    .collect_vec();
-                #[cfg(feature = "display")]
-                end_timer!(witness_time);
-                Ok(())
-            },
-        )?;
+                    instances.extend(
+                        lhs.x
+                            .truncation
+                            .limbs
+                            .iter()
+                            .chain(lhs.y.truncation.limbs.iter())
+                            .chain(rhs.x.truncation.limbs.iter())
+                            .chain(rhs.y.truncation.limbs.iter())
+                            .map(|assigned| assigned.cell())
+                            .cloned(),
+                    );
+                    let _num_lookup_advice = config.range().finalize(&mut loader.ctx_mut());
+                    #[cfg(feature = "display")]
+                    loader.ctx_mut().print_stats(&["Range"], _num_lookup_advice);
+                    Ok(())
+                },
+            )
+            .unwrap();
 
         // Expose instances
-        // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
-        for (i, cell) in assigned_instances.into_iter().enumerate() {
+        for (i, cell) in instances.into_iter().enumerate() {
             layouter.constrain_instance(cell, config.instance, i);
         }
+        #[cfg(feature = "display")]
+        end_timer!(witness_time);
+        Ok(())
+    }
+}
+
+/// This circuit takes a single SNARK, assumed to be an aggregation circuit of some kind,
+/// and passes through all of its instances except the old accumulators.
+///
+/// We assume the previous SNARK circuit only has one instance column.
+#[derive(Clone)]
+pub struct EvmVerifierAfterAggregationCircuit(pub AggregationCircuit);
+
+impl EvmVerifierAfterAggregationCircuit {
+    pub fn new(
+        params: &ParamsKZG<Bn256>,
+        snark: Snark,
+        transcript_write: &mut PoseidonTranscript<NativeLoader, Vec<u8>>,
+        rng: &mut (impl Rng + Send),
+    ) -> Self {
+        Self(AggregationCircuit::new(params, vec![snark], transcript_write, rng))
+    }
+}
+
+impl CircuitExt<Fr> for EvmVerifierAfterAggregationCircuit {
+    type ExtraCircuitParams = usize;
+
+    fn extra_params(&self) -> usize {
+        assert_eq!(self.0.snarks[0].instances.len(), 1);
+        self.0.snarks[0].instances[0].len()
+    }
+
+    fn num_instance(num_instance: &usize) -> Vec<usize> {
+        vec![*num_instance]
+    }
+
+    fn instances(&self) -> Vec<Vec<Fr>> {
+        let instance = self
+            .0
+            .instances
+            .iter()
+            .cloned()
+            .chain(
+                self.0.snarks[0].instances[0][4 * LIMBS..]
+                    .iter()
+                    .map(|v| value_to_option(*v).unwrap()),
+            )
+            .collect_vec();
+        vec![instance]
+    }
+
+    fn accumulator_indices() -> Option<Vec<(usize, usize)>> {
+        Some((0..4 * LIMBS).map(|idx| (0, idx)).collect())
+    }
+
+    fn selectors(config: &Self::Config) -> Vec<Selector> {
+        config.gate().basic_gates[0].iter().map(|gate| gate.q_enable).collect()
+    }
+}
+
+impl Circuit<Fr> for EvmVerifierAfterAggregationCircuit {
+    type Config = AggregationConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self(self.0.without_witnesses())
+    }
+
+    fn configure(meta: &mut plonk::ConstraintSystem<Fr>) -> Self::Config {
+        AggregationCircuit::configure(meta)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), plonk::Error> {
+        #[cfg(feature = "display")]
+        let witness_time = start_timer!(|| { "synthesize | EVM verifier" });
+        config.range().load_lookup_table(&mut layouter).expect("load range lookup table");
+        let mut first_pass = halo2_base::SKIP_FIRST_PASS;
+        let mut instances = vec![];
+        layouter
+            .assign_region(
+                || "",
+                |region| {
+                    if first_pass {
+                        first_pass = false;
+                        return Ok(());
+                    }
+                    let ctx = Context::new(
+                        region,
+                        ContextParams {
+                            max_rows: config.gate().max_rows,
+                            num_context_ids: 1,
+                            fixed_columns: config.gate().constants.clone(),
+                        },
+                    );
+
+                    let ecc_chip = config.ecc_chip();
+                    let loader = Halo2Loader::new(ecc_chip, ctx);
+                    let (prev_instances, KzgAccumulator { lhs, rhs }) =
+                        aggregate::<Kzg<Bn256, Bdfg21>>(
+                            &self.0.svk,
+                            &loader,
+                            &self.0.snarks,
+                            self.0.as_proof(),
+                        );
+                    let lhs = lhs.assigned();
+                    let rhs = rhs.assigned();
+
+                    instances.extend(
+                        lhs.x
+                            .truncation
+                            .limbs
+                            .iter()
+                            .chain(lhs.y.truncation.limbs.iter())
+                            .chain(rhs.x.truncation.limbs.iter())
+                            .chain(rhs.y.truncation.limbs.iter())
+                            .chain(prev_instances[4 * LIMBS..].iter())
+                            .map(|assigned| assigned.cell())
+                            .cloned(),
+                    );
+
+                    let _num_lookup_advice = config.range().finalize(&mut loader.ctx_mut());
+                    #[cfg(feature = "display")]
+                    loader.ctx_mut().print_stats(&["Range"], _num_lookup_advice);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        // Expose instances
+        for (i, cell) in instances.into_iter().enumerate() {
+            layouter.constrain_instance(cell, config.instance, i);
+        }
+        #[cfg(feature = "display")]
+        end_timer!(witness_time);
         Ok(())
     }
 }

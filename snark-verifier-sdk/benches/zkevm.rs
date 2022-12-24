@@ -16,6 +16,7 @@ use snark_verifier_sdk::{
         aggregation::load_verify_circuit_degree, aggregation::AggregationCircuit, gen_proof_gwc,
         gen_proof_shplonk, gen_snark_shplonk, PoseidonTranscript, POSEIDON_SPEC,
     },
+    CircuitExt,
 };
 use std::env::{set_var, var};
 use std::path::Path;
@@ -71,7 +72,7 @@ fn bench(c: &mut Criterion) {
         circuit,
         &mut transcript,
         &mut rng,
-        Some((Path::new("data/zkevm_evm.in"), Path::new("data/zkevm_evm.pf"))),
+        None, // Some((Path::new("data/zkevm_evm.in"), Path::new("data/zkevm_evm.pf"))),
     );
     let snarks = [snark];
     // === finished zkevm evm circuit ===
@@ -112,7 +113,7 @@ fn bench(c: &mut Criterion) {
     #[cfg(feature = "loader_evm")]
     {
         let deployment_code =
-            gen_evm_verifier_shplonk::<AggregationCircuit>(&params, pk.get_vk(), None);
+            gen_evm_verifier_shplonk::<AggregationCircuit>(&params, pk.get_vk(), &(), None::<&str>);
 
         let start2 = start_timer!(|| "Create EVM proof");
         let proof = gen_evm_proof_shplonk(

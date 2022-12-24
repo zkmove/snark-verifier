@@ -1,4 +1,6 @@
 use super::{CircuitExt, Plonk};
+#[cfg(feature = "display")]
+use ark_std::{end_timer, start_timer};
 use ethereum_types::Address;
 use halo2_base::halo2_proofs::{
     dev::MockProver,
@@ -35,7 +37,7 @@ pub fn gen_evm_proof<'params, C, P, V>(
     pk: &'params ProvingKey<G1Affine>,
     circuit: C,
     instances: Vec<Vec<Fr>>,
-    rng: &mut impl Rng,
+    rng: &mut (impl Rng + Send),
 ) -> Vec<u8>
 where
     C: Circuit<Fr>,
@@ -53,6 +55,9 @@ where
     }
 
     let instances = instances.iter().map(|instances| instances.as_slice()).collect_vec();
+
+    #[cfg(feature = "display")]
+    let proof_time = start_timer!(|| "Create EVM proof");
     let proof = {
         let mut transcript = TranscriptWriterBuffer::<_, G1Affine, _>::init(Vec::new());
         create_proof::<KZGCommitmentScheme<Bn256>, P, _, _, EvmTranscript<_, _, _, _>, _>(
@@ -66,6 +71,8 @@ where
         .unwrap();
         transcript.finalize()
     };
+    #[cfg(feature = "display")]
+    end_timer!(proof_time);
 
     let accept = {
         let mut transcript = TranscriptReadBuffer::<_, G1Affine, _>::init(proof.as_slice());
@@ -90,7 +97,7 @@ pub fn gen_evm_proof_gwc<'params, C: Circuit<Fr>>(
     pk: &'params ProvingKey<G1Affine>,
     circuit: C,
     instances: Vec<Vec<Fr>>,
-    rng: &mut impl Rng,
+    rng: &mut (impl Rng + Send),
 ) -> Vec<u8> {
     gen_evm_proof::<C, ProverGWC<_>, VerifierGWC<_>>(params, pk, circuit, instances, rng)
 }
@@ -100,7 +107,7 @@ pub fn gen_evm_proof_shplonk<'params, C: Circuit<Fr>>(
     pk: &'params ProvingKey<G1Affine>,
     circuit: C,
     instances: Vec<Vec<Fr>>,
-    rng: &mut impl Rng,
+    rng: &mut (impl Rng + Send),
 ) -> Vec<u8> {
     gen_evm_proof::<C, ProverSHPLONK<_>, VerifierSHPLONK<_>>(params, pk, circuit, instances, rng)
 }
@@ -108,6 +115,7 @@ pub fn gen_evm_proof_shplonk<'params, C: Circuit<Fr>>(
 pub fn gen_evm_verifier<C, PCS>(
     params: &ParamsKZG<Bn256>,
     vk: &VerifyingKey<G1Affine>,
+    extra_circuit_params: &C::ExtraCircuitParams,
     path: Option<&Path>,
 ) -> Vec<u8>
 where
@@ -128,7 +136,7 @@ where
         params,
         vk,
         Config::kzg()
-            .with_num_instance(C::num_instance())
+            .with_num_instance(C::num_instance(extra_circuit_params))
             .with_accumulator_indices(C::accumulator_indices()),
     );
 
@@ -136,9 +144,9 @@ where
     let protocol = protocol.loaded(&loader);
     let mut transcript = EvmTranscript::<_, Rc<EvmLoader>, _, _>::new(&loader);
 
-    let instances = transcript.load_instances(C::num_instance());
-    let proof = Plonk::<PCS>::read_proof(&svk, &protocol, &instances, &mut transcript).unwrap();
-    Plonk::<PCS>::verify(&svk, &dk, &protocol, &instances, &proof).unwrap();
+    let instances = transcript.load_instances(C::num_instance(extra_circuit_params));
+    let proof = Plonk::<PCS>::read_proof(&svk, &protocol, &instances, &mut transcript);
+    Plonk::<PCS>::verify(&svk, &dk, &protocol, &instances, &proof);
 
     let yul_code = loader.yul_code();
     let byte_code = compile_yul(&yul_code);
@@ -152,17 +160,19 @@ where
 pub fn gen_evm_verifier_gwc<C: CircuitExt<Fr>>(
     params: &ParamsKZG<Bn256>,
     vk: &VerifyingKey<G1Affine>,
+    extra_circuit_params: &C::ExtraCircuitParams,
     path: Option<&Path>,
 ) -> Vec<u8> {
-    gen_evm_verifier::<C, Kzg<Bn256, Gwc19>>(params, vk, path)
+    gen_evm_verifier::<C, Kzg<Bn256, Gwc19>>(params, vk, extra_circuit_params, path)
 }
 
 pub fn gen_evm_verifier_shplonk<C: CircuitExt<Fr>>(
     params: &ParamsKZG<Bn256>,
     vk: &VerifyingKey<G1Affine>,
+    extra_circuit_params: &C::ExtraCircuitParams,
     path: Option<&Path>,
 ) -> Vec<u8> {
-    gen_evm_verifier::<C, Kzg<Bn256, Bdfg21>>(params, vk, path)
+    gen_evm_verifier::<C, Kzg<Bn256, Bdfg21>>(params, vk, extra_circuit_params, path)
 }
 
 pub fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) {
