@@ -1,7 +1,7 @@
 use super::{read_instances, write_instances, CircuitExt, Snark, SnarkWitness};
 #[cfg(feature = "display")]
 use ark_std::{end_timer, start_timer};
-use halo2_base::{halo2_proofs, poseidon::Spec};
+use halo2_base::halo2_proofs;
 use halo2_proofs::{
     circuit::Layouter,
     dev::MockProver,
@@ -34,10 +34,10 @@ use snark_verifier::{
     system::halo2::{compile, Config},
     util::transcript::TranscriptWrite,
     verifier::PlonkProof,
+    PoseidonSpec,
 };
 use std::{
     fs::{self, File},
-    iter,
     marker::PhantomData,
     path::Path,
 };
@@ -62,7 +62,7 @@ pub type PoseidonTranscript<L, S> =
     >;
 
 lazy_static! {
-    pub static ref POSEIDON_SPEC: Spec<Fr, T, RATE> = Spec::new(R_F, R_P);
+    pub static ref POSEIDON_SPEC: PoseidonSpec<Fr, T, RATE> = PoseidonSpec::new(R_F, R_P);
 }
 
 /// Generates a native proof using either SHPLONK or GWC proving method. Uses Poseidon for Fiat-Shamir.
@@ -207,7 +207,7 @@ where
         params,
         pk.get_vk(),
         Config::kzg()
-            .with_num_instance(ConcreteCircuit::num_instance(&circuit.extra_params()))
+            .with_num_instance(circuit.num_instance())
             .with_accumulator_indices(ConcreteCircuit::accumulator_indices()),
     );
 
@@ -279,7 +279,7 @@ pub fn read_snark(path: impl AsRef<Path>) -> Result<Snark, bincode::Error> {
 pub fn gen_dummy_snark<ConcreteCircuit, MOS>(
     params: &ParamsKZG<Bn256>,
     vk: Option<&VerifyingKey<G1Affine>>,
-    extra_params: &ConcreteCircuit::ExtraCircuitParams,
+    num_instance: Vec<usize>,
 ) -> Snark
 where
     ConcreteCircuit: CircuitExt<Fr>,
@@ -327,13 +327,10 @@ where
         params,
         vk.or(dummy_vk.as_ref()).unwrap(),
         Config::kzg()
-            .with_num_instance(ConcreteCircuit::num_instance(extra_params))
+            .with_num_instance(num_instance.clone())
             .with_accumulator_indices(ConcreteCircuit::accumulator_indices()),
     );
-    let instances = ConcreteCircuit::num_instance(extra_params)
-        .into_iter()
-        .map(|n| iter::repeat(Fr::default()).take(n).collect())
-        .collect();
+    let instances = num_instance.into_iter().map(|n| vec![Fr::default(); n]).collect();
     let proof = {
         let mut transcript = PoseidonTranscript::<NativeLoader, _>::new(Vec::new());
         for _ in 0..protocol
