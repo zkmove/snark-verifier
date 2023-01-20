@@ -70,14 +70,16 @@ pub fn flatten_accumulator<'b, 'a: 'b>(
 #[allow(clippy::type_complexity)]
 /// Core function used in `synthesize` to aggregate multiple `snarks`.
 ///  
-/// Returns the assigned instances of previous snarks (all concatenated together) and the new final pair that needs to be verified in a pairing check
+/// Returns the assigned instances of previous snarks and the new final pair that needs to be verified in a pairing check.
+/// For each previous snark, we concatenate all instances into a single vector. We return a vector of vectors,
+/// one vector per snark, for convenience.
 pub fn aggregate<'a, PCS>(
     svk: &PCS::SuccinctVerifyingKey,
     loader: &Rc<Halo2Loader<'a>>,
     snarks: &[SnarkWitness],
     as_proof: Value<&'_ [u8]>,
 ) -> (
-    Vec<<BaseFieldEccChip as EccInstructions<'a, G1Affine>>::AssignedScalar>,
+    Vec<Vec<<BaseFieldEccChip as EccInstructions<'a, G1Affine>>::AssignedScalar>>,
     KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>>,
 )
 where
@@ -97,7 +99,7 @@ where
     };
 
     // TODO pre-allocate capacity better
-    let mut previous_instances = Vec::new();
+    let mut previous_instances = Vec::with_capacity(snarks.len());
     let mut transcript = PoseidonTranscript::<Rc<Halo2Loader<'a>>, _>::from_spec(
         loader,
         Value::unknown(),
@@ -117,8 +119,9 @@ where
             let proof = Plonk::<PCS>::read_proof(svk, &protocol, &instances, &mut transcript);
             let accumulator = Plonk::<PCS>::succinct_verify(svk, &protocol, &instances, &proof);
 
-            previous_instances
-                .extend(instances.into_iter().flatten().map(|scalar| scalar.into_assigned()));
+            previous_instances.push(
+                instances.into_iter().flatten().map(|scalar| scalar.into_assigned()).collect(),
+            );
 
             accumulator
         })
@@ -492,18 +495,10 @@ impl Circuit<Fr> for PublicAggregationCircuit {
                     // accumulator
                     instances.extend(flatten_accumulator(acc).iter().map(|a| a.cell().clone()));
                     // prev instances except accumulators
-                    let mut idx = 0;
                     let start_idx = 4 * LIMBS * usize::from(self.has_prev_accumulator);
-                    for snark in self.aggregation.snarks.iter() {
-                        for (i, instance) in snark.instances.iter().enumerate() {
-                            let start_idx = usize::from(i == 0) * start_idx;
-                            instances.extend(
-                                prev_instances[idx + start_idx..idx + instance.len()]
-                                    .iter()
-                                    .map(|a| a.cell().clone()),
-                            );
-                            idx += instance.len();
-                        }
+                    for prev_instance in prev_instances {
+                        instances
+                            .extend(prev_instance[start_idx..].iter().map(|a| a.cell().clone()));
                     }
 
                     config.range().finalize(&mut loader.ctx_mut());
