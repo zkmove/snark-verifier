@@ -437,7 +437,7 @@ impl CircuitExt<Fr> for PublicAggregationCircuit {
     }
 
     fn selectors(config: &Self::Config) -> Vec<Selector> {
-        config.gate().basic_gates[0].iter().map(|gate| gate.q_enable).collect()
+        AggregationCircuit::selectors(config)
     }
 }
 

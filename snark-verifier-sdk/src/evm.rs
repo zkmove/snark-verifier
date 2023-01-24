@@ -20,8 +20,9 @@ use halo2_base::halo2_proofs::{
 };
 use itertools::Itertools;
 use rand::Rng;
+pub use snark_verifier::loader::evm::encode_calldata;
 use snark_verifier::{
-    loader::evm::{compile_yul, encode_calldata, EvmLoader, ExecutorBuilder},
+    loader::evm::{compile_yul, EvmLoader, ExecutorBuilder},
     pcs::{
         kzg::{Bdfg21, Gwc19, Kzg, KzgAccumulator, KzgDecidingKey, KzgSuccinctVerifyingKey},
         Decider, MultiOpenScheme, PolynomialCommitmentScheme,
@@ -191,7 +192,9 @@ pub fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<
     assert!(success);
 }
 
-pub fn write_calldata(instances: &[Vec<Fr>], proof: &[u8], path: &Path) -> io::Result<()> {
+pub fn write_calldata(instances: &[Vec<Fr>], proof: &[u8], path: &Path) -> io::Result<String> {
     let calldata = encode_calldata(instances, proof);
-    fs::write(path, hex::encode(calldata))
+    let calldata = hex::encode(calldata);
+    fs::write(path, &calldata)?;
+    Ok(calldata)
 }
