@@ -5,3 +5,6 @@
 testdata
 
 Cargo.lock
+
+# local files
+*.srs
