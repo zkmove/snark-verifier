@@ -372,7 +372,7 @@ impl Circuit<Fr> for AggregationCircuit {
 
         // Expose instances
         for (i, cell) in instances.into_iter().enumerate() {
-            layouter.constrain_instance(cell, config.instance, i);
+            layouter.constrain_instance(cell, config.instance, i)?;
         }
         #[cfg(feature = "display")]
         end_timer!(witness_time);
@@ -510,7 +510,7 @@ impl Circuit<Fr> for PublicAggregationCircuit {
             .unwrap();
         // Expose instances
         for (i, cell) in instances.into_iter().enumerate() {
-            layouter.constrain_instance(cell, config.instance, i);
+            layouter.constrain_instance(cell, config.instance, i)?;
         }
         #[cfg(feature = "display")]
         end_timer!(witness_time);
