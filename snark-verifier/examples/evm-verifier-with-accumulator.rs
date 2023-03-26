@@ -1,5 +1,8 @@
 use ethereum_types::Address;
-use halo2_base::halo2_proofs;
+use halo2_base::halo2_proofs::{
+    self,
+    poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK},
+};
 use halo2_proofs::{
     dev::MockProver,
     halo2curves::bn256::{Bn256, Fq, Fr, G1Affine},
@@ -8,7 +11,6 @@ use halo2_proofs::{
         commitment::{Params, ParamsProver},
         kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
-            multiopen::{ProverGWC, VerifierGWC},
             strategy::AccumulatorStrategy,
         },
         VerificationStrategy,
@@ -22,7 +24,7 @@ use snark_verifier::{
         evm::{self, encode_calldata, EvmLoader, ExecutorBuilder},
         native::NativeLoader,
     },
-    pcs::kzg::{Gwc19, Kzg, KzgAs, LimbsEncoding},
+    pcs::kzg::{Bdfg21, Kzg, KzgAs, LimbsEncoding},
     system::halo2::{compile, transcript::evm::EvmTranscript, Config},
     verifier::{self, PlonkVerifier},
 };
@@ -31,7 +33,7 @@ use std::{io::Cursor, rc::Rc};
 const LIMBS: usize = 3;
 const BITS: usize = 88;
 
-type Pcs = Kzg<Bn256, Gwc19>;
+type Pcs = Kzg<Bn256, Bdfg21>;
 type As = KzgAs<Pcs>;
 type Plonk = verifier::Plonk<Pcs, LimbsEncoding<LIMBS, BITS>>;
 
@@ -42,7 +44,6 @@ mod application {
         poly::Rotation,
     };
     use super::Fr;
-    use halo2_base::halo2_proofs::plonk::Assigned;
     use rand::RngCore;
 
     #[derive(Clone, Copy)]
@@ -409,7 +410,6 @@ mod aggregation {
                         .unwrap();
                 (accumulator, transcript.finalize())
             };
-
             let KzgAccumulator { lhs, rhs } = accumulator;
             let instances =
                 [lhs.x, lhs.y, rhs.x, rhs.y].map(fe_to_limbs::<_, _, LIMBS, BITS>).concat();
@@ -525,7 +525,7 @@ mod aggregation {
             // TODO: use less instances by following Scroll's strategy of keeping only last bit of y coordinate
             let mut layouter = layouter.namespace(|| "expose");
             for (i, cell) in assigned_instances.unwrap().into_iter().enumerate() {
-                layouter.constrain_instance(cell, config.instance, i);
+                layouter.constrain_instance(cell, config.instance, i)?;
             }
             Ok(())
         }
@@ -553,7 +553,7 @@ fn gen_proof<
     let instances = instances.iter().map(|instances| instances.as_slice()).collect_vec();
     let proof = {
         let mut transcript = TW::init(Vec::new());
-        create_proof::<KZGCommitmentScheme<Bn256>, ProverGWC<_>, _, _, TW, _>(
+        create_proof::<KZGCommitmentScheme<Bn256>, ProverSHPLONK<_>, _, _, TW, _>(
             params,
             pk,
             &[circuit],
@@ -567,8 +567,8 @@ fn gen_proof<
 
     let accept = {
         let mut transcript = TR::init(Cursor::new(proof.clone()));
-        VerificationStrategy::<_, VerifierGWC<_>>::finalize(
-            verify_proof::<_, VerifierGWC<_>, _, TR, _>(
+        VerificationStrategy::<_, VerifierSHPLONK<_>>::finalize(
+            verify_proof::<_, VerifierSHPLONK<_>, _, TR, _>(
                 params.verifier_params(),
                 pk.get_vk(),
                 AccumulatorStrategy::new(params.verifier_params()),
@@ -663,7 +663,6 @@ fn main() {
         aggregation::AggregationCircuit::num_instance(),
         aggregation::AggregationCircuit::accumulator_indices(),
     );
-
     let proof = gen_proof::<_, _, EvmTranscript<G1Affine, _, _, _>, EvmTranscript<G1Affine, _, _, _>>(
         &params,
         &pk,

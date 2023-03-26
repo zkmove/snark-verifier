@@ -154,7 +154,7 @@ pub fn accumulate<'a>(
         })
         .collect_vec();
 
-    let acccumulator = if accumulators.len() > 1 {
+    let accumulator = if accumulators.len() > 1 {
         let mut transcript = PoseidonTranscript::<Rc<Halo2Loader>, _>::new(loader, as_proof);
         let proof = As::read_proof(as_vk, &accumulators, &mut transcript).unwrap();
         As::verify(as_vk, &accumulators, &proof).unwrap()
@@ -162,7 +162,7 @@ pub fn accumulate<'a>(
         accumulators.pop().unwrap()
     };
 
-    acccumulator
+    accumulator
 }
 
 pub struct Accumulation {

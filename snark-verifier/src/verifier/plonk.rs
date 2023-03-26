@@ -49,7 +49,7 @@ where
         let common_poly_eval = {
             let mut common_poly_eval = CommonPolynomialEvaluation::new(
                 &protocol.domain,
-                langranges(protocol, instances),
+                lagranges(protocol, instances),
                 &proof.z,
             );
 
@@ -383,7 +383,7 @@ where
     }
 }
 
-fn langranges<C, L>(
+fn lagranges<C, L>(
     protocol: &Protocol<C, L>,
     instances: &[Vec<L::LoadedScalar>],
 ) -> impl IntoIterator<Item = i32>
