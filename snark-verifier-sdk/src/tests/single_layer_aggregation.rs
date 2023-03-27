@@ -1,4 +1,4 @@
-use super::StandardPlonk;
+use super::{TestCircuit1, TestCircuit2};
 use crate::evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier};
 use crate::halo2::aggregation::AggregationCircuit;
 use crate::CircuitExt;
@@ -10,35 +10,59 @@ use halo2_proofs::poly::commitment::Params;
 use snark_verifier::loader::halo2::halo2_ecc::halo2_base::utils::fs::gen_srs;
 use snark_verifier::pcs::kzg::{Bdfg21, Kzg};
 use std::path::Path;
+
 #[test]
-fn test_aggregation_evm_verification() {
+fn test_single_layer_aggregation_evm_verification() {
     std::env::set_var("VERIFY_CONFIG", "./configs/example_evm_accumulator.config");
     let k = 8;
     let k_agg = 21;
 
     let mut rng = test_rng();
-
-    let circuit = StandardPlonk::rand(&mut rng);
     let params_outer = gen_srs(k_agg);
     let params_inner = {
         let mut params = params_outer.clone();
         params.downsize(k);
         params
     };
-    let pk_inner = gen_pk(&params_inner, &circuit, Some(Path::new("data/inner.pkey")));
-    let snarks = (0..3)
-        .map(|i| {
-            gen_snark_shplonk(
-                &params_inner,
-                &pk_inner,
-                circuit.clone(),
-                &mut rng,
-                Some(Path::new(&format!("data/inner_{}.snark", i).to_string())),
-            )
-        })
-        .collect::<Vec<_>>();
-    println!("finished snark generation");
 
+    // Proof for circuit 1
+    let circuit_1 = TestCircuit1::rand(&mut rng);
+    let pk_inner_1 = gen_pk(&params_inner, &circuit_1, Some(Path::new("data/inner_1.pkey")));
+    let snarks_1 = gen_snark_shplonk(
+        &params_inner,
+        &pk_inner_1,
+        circuit_1.clone(),
+        &mut rng,
+        Some(Path::new("data/inner_1.snark")),
+    );
+    println!("finished snark generation for circuit 1");
+
+    // Another Proof for circuit 1
+    let circuit_2 = TestCircuit1::rand(&mut rng);
+    let pk_inner_2 = gen_pk(&params_inner, &circuit_2, Some(Path::new("data/inner_2.pkey")));
+    let snarks_2 = gen_snark_shplonk(
+        &params_inner,
+        &pk_inner_2,
+        circuit_1.clone(),
+        &mut rng,
+        Some(Path::new("data/inner_2.snark")),
+    );
+    println!("finished snark generation for circuit 1");
+
+    // Proof for circuit 2
+    let circuit_3 = TestCircuit2::rand(&mut rng);
+    let pk_inner_3 = gen_pk(&params_inner, &circuit_1, Some(Path::new("data/inner_3.pkey")));
+    let snarks_3 = gen_snark_shplonk(
+        &params_inner,
+        &pk_inner_3,
+        circuit_3.clone(),
+        &mut rng,
+        Some(Path::new("data/inner_3.snark")),
+    );
+    println!("finished snark generation for circuit 1");
+
+    // aggregation circuit
+    let snarks = vec![snarks_1, snarks_2, snarks_3];
     let agg_circuit = AggregationCircuit::new(&params_outer, snarks, &mut rng);
     let pk_outer = gen_pk(&params_outer, &agg_circuit, Some(Path::new("data/outer.pkey")));
     println!("finished outer pk generation");

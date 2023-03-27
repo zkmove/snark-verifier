@@ -1,4 +1,4 @@
-use super::StandardPlonk;
+use super::TestCircuit1;
 use crate::evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier};
 use crate::halo2::aggregation::AggregationCircuit;
 use crate::CircuitExt;
@@ -12,7 +12,7 @@ use snark_verifier::pcs::kzg::{Bdfg21, Kzg};
 use std::path::Path;
 
 #[test]
-fn test_aggregation_evm_verification() {
+fn test_two_layer_aggregation_evm_verification() {
     std::env::set_var("VERIFY_CONFIG", "./configs/example_evm_accumulator.config");
     let k = 8;
     let k_agg = 21;
@@ -26,7 +26,7 @@ fn test_aggregation_evm_verification() {
     };
 
     // layer 1 snarks
-    let circuit = StandardPlonk::rand(&mut rng);
+    let circuit = TestCircuit1::rand(&mut rng);
     let pk_inner = gen_pk(&params_inner, &circuit, None);
     let snarks = (0..3)
         .map(|i| {

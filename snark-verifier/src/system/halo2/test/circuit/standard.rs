@@ -4,7 +4,6 @@ use crate::halo2_proofs::{
     poly::Rotation,
 };
 use crate::util::arithmetic::FieldExt;
-use halo2_base::halo2_proofs::plonk::Assigned;
 use rand::RngCore;
 
 #[allow(dead_code)]

@@ -1,4 +1,4 @@
-use super::StandardPlonk;
+use super::TestCircuit1;
 use crate::evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier};
 use crate::gen_pk;
 use crate::CircuitExt;
@@ -15,9 +15,9 @@ fn test_evm_verification() {
     let mut rng = test_rng();
     let params = gen_srs(8);
 
-    let circuit = StandardPlonk::rand(&mut rng);
+    let circuit = TestCircuit1::rand(&mut rng);
     let pk = gen_pk(&params, &circuit, None);
-    let deployment_code = gen_evm_verifier::<StandardPlonk, Kzg<Bn256, Bdfg21>>(
+    let deployment_code = gen_evm_verifier::<TestCircuit1, Kzg<Bn256, Bdfg21>>(
         &params,
         pk.get_vk(),
         circuit.num_instance(),

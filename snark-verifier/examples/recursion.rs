@@ -764,7 +764,7 @@ mod recursion {
                             ),
                         ),
                     ] {
-                        ctx.region.constrain_equal(lhs.cell(), rhs.cell());
+                        ctx.region.constrain_equal(lhs.cell(), rhs.cell())?;
                     }
 
                     // IMPORTANT:
@@ -787,7 +787,7 @@ mod recursion {
 
             assert_eq!(assigned_instances.len(), 4 * LIMBS + 4);
             for (row, limb) in assigned_instances.into_iter().enumerate() {
-                layouter.constrain_instance(limb, config.instance, row);
+                layouter.constrain_instance(limb, config.instance, row)?;
             }
 
             Ok(())
