@@ -27,6 +27,8 @@ pub mod evm;
 #[cfg(feature = "loader_halo2")]
 pub mod halo2;
 
+mod evm_circuits;
+
 #[cfg(test)]
 mod tests;
 
