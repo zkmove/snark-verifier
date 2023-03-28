@@ -12,7 +12,7 @@ use snark_verifier::pcs::kzg::{Bdfg21, Kzg};
 use std::path::Path;
 
 #[test]
-fn test_single_layer_aggregation_evm_verification() {
+fn test_shplonk_then_sphplonk_with_evm_verification() {
     std::env::set_var("VERIFY_CONFIG", "./configs/example_evm_accumulator.config");
     let k = 8;
     let k_agg = 21;
