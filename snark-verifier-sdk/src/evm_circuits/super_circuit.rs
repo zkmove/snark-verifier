@@ -1,6 +1,5 @@
 use eth_types::Field;
-use halo2_base::halo2_proofs::plonk::Selector;
-use zkevm_circuits::super_circuit::SuperCircuit;
+use zkevm_circuits::{super_circuit::SuperCircuit, util::SubCircuit};
 
 use crate::CircuitExt;
 
@@ -15,19 +14,20 @@ impl<
     /// Return the number of instances of the circuit.
     /// This may depend on extra circuit parameters but NOT on private witnesses.
     fn num_instance(&self) -> Vec<usize> {
-        todo!()
+        vec![2, 0]
     }
 
     fn instances(&self) -> Vec<Vec<F>> {
-        todo!()
-    }
+        let mut instance = Vec::new();
+        instance.extend_from_slice(&self.keccak_circuit.instance());
+        instance.extend_from_slice(&self.pi_circuit.instance());
+        instance.extend_from_slice(&self.tx_circuit.instance());
+        instance.extend_from_slice(&self.bytecode_circuit.instance());
+        instance.extend_from_slice(&self.copy_circuit.instance());
+        instance.extend_from_slice(&self.state_circuit.instance());
+        instance.extend_from_slice(&self.exp_circuit.instance());
+        instance.extend_from_slice(&self.evm_circuit.instance());
 
-    fn accumulator_indices() -> Option<Vec<(usize, usize)>> {
-        todo!()
-    }
-
-    /// Output the simple selector columns (before selector compression) of the circuit
-    fn selectors(_: &Self::Config) -> Vec<Selector> {
-        todo!()
+        instance
     }
 }
