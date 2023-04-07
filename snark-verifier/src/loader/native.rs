@@ -48,7 +48,9 @@ impl<C: CurveAffine> EcPointLoader<C> for NativeLoader {
         lhs: &Self::LoadedEcPoint,
         rhs: &Self::LoadedEcPoint,
     ) -> Result<(), Error> {
-        lhs.eq(rhs).then_some(()).ok_or_else(|| Error::AssertionFailure(annotation.to_string()))
+        lhs.eq(rhs)
+            .then_some(())
+            .ok_or_else(|| Error::AssertionFailure(annotation.to_string()))
     }
 
     fn multi_scalar_multiplication(
@@ -77,7 +79,9 @@ impl<F: PrimeField> ScalarLoader<F> for NativeLoader {
         lhs: &Self::LoadedScalar,
         rhs: &Self::LoadedScalar,
     ) -> Result<(), Error> {
-        lhs.eq(rhs).then_some(()).ok_or_else(|| Error::AssertionFailure(annotation.to_string()))
+        lhs.eq(rhs)
+            .then_some(())
+            .ok_or_else(|| Error::AssertionFailure(annotation.to_string()))
     }
 }
 

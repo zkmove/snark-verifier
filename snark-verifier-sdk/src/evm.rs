@@ -3,11 +3,10 @@ use super::{CircuitExt, Plonk};
 use ark_std::{end_timer, start_timer};
 use ethereum_types::Address;
 use halo2_base::halo2_proofs::{
-    dev::MockProver,
     halo2curves::bn256::{Bn256, Fq, Fr, G1Affine},
     plonk::{create_proof, verify_proof, Circuit, ProvingKey, VerifyingKey},
     poly::{
-        commitment::{Params, ParamsProver, Prover, Verifier},
+        commitment::{ParamsProver, Prover, Verifier},
         kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
             msm::DualMSM,
@@ -52,6 +51,10 @@ where
 {
     #[cfg(debug_assertions)]
     {
+        use halo2_base::halo2_proofs::{
+            dev::MockProver,
+            poly::commitment::Params,
+        };
         MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
     }
 

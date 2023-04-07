@@ -13,7 +13,9 @@ pub struct YulCode {
 
 impl YulCode {
     pub fn new() -> Self {
-        YulCode { runtime: String::new() }
+        YulCode {
+            runtime: String::new(),
+        }
     }
 
     pub fn code(&self, base_modulus: String, scalar_modulus: String) -> String {
