@@ -2,10 +2,15 @@
 //!
 //! TODO: move those definitions to zkevm-circuit repo.
 
+#[cfg(test)]
 mod evm_circuit;
+#[cfg(test)]
 mod mpt_circuit;
+#[cfg(test)]
 mod poseidon_circuit;
+#[cfg(test)]
 mod state_circuit;
+#[cfg(test)]
 mod super_circuit;
 
 #[cfg(all(test, feature = "zkevm"))]
