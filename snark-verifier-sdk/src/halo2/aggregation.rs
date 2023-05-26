@@ -50,9 +50,9 @@ pub fn load_verify_circuit_degree() -> u32 {
     params.degree
 }
 
-pub fn flatten_accumulator<'b, 'a: 'b>(
+pub fn flatten_accumulator<'a>(
     accumulator: KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>>,
-) -> Vec<AssignedValue<'b, Fr>> {
+) -> Vec<AssignedValue<Fr>> {
     let KzgAccumulator { lhs, rhs } = accumulator;
     let lhs = lhs.into_assigned();
     let rhs = rhs.into_assigned();
@@ -204,7 +204,10 @@ impl AggregationConfig {
 pub struct AggregationCircuit {
     svk: Svk,
     snarks: Vec<SnarkWitness>,
+    // the public instances from previous snarks that were aggregated, now collected as PRIVATE assigned values
+    // the user can optionally append these to `inner.assigned_instances` to expose them
     instances: Vec<Fr>,
+    // accumulation scheme proof, private input
     as_proof: Value<Vec<u8>>,
 }
 
