@@ -9,6 +9,8 @@ use snark_verifier::Protocol;
 
 mod mock;
 
+pub use mock::gen_dummy_snark;
+
 /// A Snark struct is all one may need to generate witnesses for an aggregation circuit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snark {

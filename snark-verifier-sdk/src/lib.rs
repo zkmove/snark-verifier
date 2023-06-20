@@ -15,10 +15,12 @@ pub mod types;
 
 pub use aggregation::aggregation_circuit::AggregationCircuit;
 pub use aggregation::multi_aggregation_circuit::PublicAggregationCircuit;
+pub use aggregation::load_verify_circuit_degree;
 pub use aggregation::{aggregate, flatten_accumulator};
 pub use circuit_ext::CircuitExt;
 pub use param::{BITS, LIMBS};
 pub use snark::{Snark, SnarkWitness};
+pub use snark::gen_dummy_snark;
 
 pub use file_io::{
     // read instances from disk
