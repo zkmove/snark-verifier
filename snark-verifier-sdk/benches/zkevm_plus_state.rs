@@ -12,7 +12,7 @@ use snark_verifier_sdk::{
         gen_evm_verifier_shplonk,
     },
     gen_pk,
-    halo2::{
+    halo2_api::{
         aggregation::load_verify_circuit_degree, aggregation::AggregationCircuit, gen_proof_gwc,
         gen_proof_shplonk, gen_snark_gwc, gen_snark_shplonk, PoseidonTranscript, POSEIDON_SPEC,
     },
@@ -80,7 +80,6 @@ fn bench(c: &mut Criterion) {
             &params_app,
             &pk,
             evm_circuit,
-            &mut transcript,
             &mut rng,
             Some(Path::new("data/zkevm_evm.snark")),
         )
@@ -91,7 +90,6 @@ fn bench(c: &mut Criterion) {
             &params_app,
             &pk,
             state_circuit,
-            &mut transcript,
             &mut rng,
             Some(Path::new("data/zkevm_state.snark")),
         )
@@ -118,15 +116,7 @@ fn bench(c: &mut Criterion) {
         |b, &(params, pk, agg_circuit)| {
             b.iter(|| {
                 let instances = agg_circuit.instances();
-                gen_proof_shplonk(
-                    params,
-                    pk,
-                    agg_circuit.clone(),
-                    instances,
-                    &mut transcript,
-                    &mut rng,
-                    None,
-                );
+                gen_proof_shplonk(params, pk, agg_circuit.clone(), instances, &mut rng, None);
             })
         },
     );
@@ -140,15 +130,7 @@ fn bench(c: &mut Criterion) {
         |b, &(params, pk, agg_circuit)| {
             b.iter(|| {
                 let instances = agg_circuit.instances();
-                gen_proof_gwc(
-                    params,
-                    pk,
-                    agg_circuit.clone(),
-                    instances,
-                    &mut transcript,
-                    &mut rng,
-                    None,
-                );
+                gen_proof_gwc(params, pk, agg_circuit.clone(), instances, &mut rng, None);
             })
         },
     );

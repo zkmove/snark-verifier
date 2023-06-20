@@ -12,11 +12,8 @@ use halo2_proofs::{
 use rand::rngs::OsRng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use snark_verifier_sdk::CircuitExt;
 use snark_verifier_sdk::{
-    gen_pk,
-    halo2::{aggregation::AggregationCircuit, gen_proof_shplonk, gen_snark_shplonk},
-    Snark,
+    gen_pk, gen_proof_shplonk, gen_snark_shplonk, AggregationCircuit, CircuitExt, Snark,
 };
 
 mod application {
