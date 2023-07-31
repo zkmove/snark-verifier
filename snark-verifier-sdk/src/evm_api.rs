@@ -55,7 +55,7 @@ where
     #[cfg(debug_assertions)]
     {
         use halo2_base::halo2_proofs::{dev::MockProver, poly::commitment::Params};
-        MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
+        MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied_par();
     }
 
     let instances = instances.iter().map(|instances| instances.as_slice()).collect_vec();
