@@ -100,7 +100,7 @@ where
         use halo2_proofs::poly::commitment::Params;
         halo2_proofs::dev::MockProver::run(params.k(), &circuit, instances.clone())
             .unwrap()
-            .assert_satisfied();
+            .assert_satisfied_par();
     }
 
     if let Some((instance_path, proof_path)) = path {

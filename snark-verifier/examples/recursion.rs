@@ -160,7 +160,9 @@ mod common {
     ) -> Vec<u8> {
         if params.k() > 3 {
             let mock = start_timer!(|| "Mock prover");
-            MockProver::run(params.k(), &circuit, instances.clone()).unwrap().assert_satisfied();
+            MockProver::run(params.k(), &circuit, instances.clone())
+                .unwrap()
+                .assert_satisfied_par();
             end_timer!(mock);
         }
 

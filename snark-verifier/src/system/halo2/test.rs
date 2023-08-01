@@ -64,7 +64,7 @@ where
             instances.iter().map(|instance| instance.to_vec()).collect(),
         )
         .unwrap()
-        .assert_satisfied();
+        .assert_satisfied_par();
     }
 
     let proof = {
