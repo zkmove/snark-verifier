@@ -187,6 +187,10 @@ pub fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<
 
 pub fn verify_evm_proof(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) -> bool {
     let calldata = encode_calldata(&instances, &proof);
+    verify_evm_calldata(deployment_code, calldata)
+}
+
+pub fn verify_evm_calldata(deployment_code: Vec<u8>, calldata: Vec<u8>) -> bool {
     let mut evm = ExecutorBuilder::default().with_gas_limit(u64::MAX.into()).build();
 
     let caller = Address::from_low_u64_be(0xfe);
