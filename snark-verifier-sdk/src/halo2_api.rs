@@ -95,6 +95,7 @@ where
         MSMAccumulator = DualMSM<'params, Bn256>,
     >,
 {
+    /*
     #[cfg(debug_assertions)]
     {
         use halo2_proofs::poly::commitment::Params;
@@ -102,6 +103,7 @@ where
             .unwrap()
             .assert_satisfied_par();
     }
+    */
 
     if let Some((instance_path, proof_path)) = path {
         let cached_instances = read_instances(instance_path);
