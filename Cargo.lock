@@ -1291,7 +1291,7 @@ checksum = "eabb4a44450da02c90444cf74558da904edde8fb4e9035a9a6a4e15445af0bd7"
 [[package]]
 name = "halo2-base"
 version = "0.2.2"
-source = "git+https://github.com/scroll-tech/halo2-lib?tag=v0.1.0#2c225864227e74b207d9f4b9e08c4d5f1afc69a1"
+source = "git+https://github.com/scroll-tech/halo2-lib?tag=v0.1.1#22d66f2d49e84b28ad4d2a3d239b13ce2376d012"
 dependencies = [
  "ff",
  "halo2_proofs 0.2.0 (git+https://github.com/axiom-crypto/halo2.git?tag=v2023_01_17)",
@@ -1307,7 +1307,7 @@ dependencies = [
 [[package]]
 name = "halo2-ecc"
 version = "0.2.2"
-source = "git+https://github.com/scroll-tech/halo2-lib?tag=v0.1.0#2c225864227e74b207d9f4b9e08c4d5f1afc69a1"
+source = "git+https://github.com/scroll-tech/halo2-lib?tag=v0.1.1#22d66f2d49e84b28ad4d2a3d239b13ce2376d012"
 dependencies = [
  "ff",
  "group",

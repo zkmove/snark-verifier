@@ -56,11 +56,7 @@ mod native {
             accumulators: Vec<KzgAccumulator<M::G1Affine, NativeLoader>>,
         ) -> bool {
             assert!(!accumulators.is_empty());
-            !accumulators
-                .into_iter()
-                .any(|accumulator| {
-                    !Self::decide(dk, accumulator)
-                })
+            !accumulators.into_iter().any(|accumulator| !Self::decide(dk, accumulator))
         }
     }
 }
