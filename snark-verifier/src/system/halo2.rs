@@ -1,5 +1,5 @@
 //! [`halo2_proofs`] proof system
-//! Reference <https://hackmd.io/@dieGzUCgSGmRZFQ7SDxXCA/rk_0OgSla>
+//! Reference <https://hackmd.io/@dieGzUCgSGmRZFQ7SDxXCA/rk_0OgSla> for mv-lookup
 use crate::{
     halo2_proofs::{
         plonk::{
