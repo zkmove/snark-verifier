@@ -1,7 +1,7 @@
 use halo2_base::halo2_proofs;
 use halo2_proofs::{
     halo2curves::bn256::Fr,
-    plonk::{Advice, Column, ConstraintSystem, Fixed, Instance, TableColumn},
+    plonk::{Advice, Column, ConstraintSystem, Fixed, Instance},
     poly::Rotation,
 };
 use test_circuit_1::TestCircuit1;
@@ -25,7 +25,6 @@ pub struct StandardPlonkConfig {
     constant: Column<Fixed>,
     #[allow(dead_code)]
     instance: Column<Instance>,
-    table: TableColumn,
 }
 
 impl StandardPlonkConfig {
@@ -33,7 +32,6 @@ impl StandardPlonkConfig {
         let [a, b, c] = [(); 3].map(|_| meta.advice_column());
         let [q_a, q_b, q_c, q_ab, constant] = [(); 5].map(|_| meta.fixed_column());
         let instance = meta.instance_column();
-        let table = meta.lookup_table_column();
 
         [a, b, c].map(|column| meta.enable_equality(column));
 
@@ -55,14 +53,6 @@ impl StandardPlonkConfig {
             },
         );
 
-        // Lookup for multiple times to test mv-lookup.
-        (0..5).for_each(|_| {
-            meta.lookup("lookup a", |meta| {
-                let a = meta.query_advice(a, Rotation::cur());
-                vec![(a, table)]
-            })
-        });
-
-        StandardPlonkConfig { a, b, c, q_a, q_b, q_c, q_ab, constant, instance, table }
+        StandardPlonkConfig { a, b, c, q_a, q_b, q_c, q_ab, constant, instance }
     }
 }
