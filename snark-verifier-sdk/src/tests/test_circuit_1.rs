@@ -68,17 +68,6 @@ impl Circuit<Fr> for TestCircuit1 {
 
                 Ok(())
             },
-        )?;
-
-        layouter.assign_table(
-            || "lookup table for values of `a`",
-            |mut table| {
-                for (i, value) in [self.0, Fr::zero(), Fr::one(), -Fr::from(5)].iter().enumerate() {
-                    table.assign_cell(|| "", config.table, i, || Value::known(value))?;
-                }
-
-                Ok(())
-            },
         )
     }
 }

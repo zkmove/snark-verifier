@@ -1,5 +1,4 @@
 //! [`halo2_proofs`] proof system
-//! Reference <https://hackmd.io/@dieGzUCgSGmRZFQ7SDxXCA/rk_0OgSla> for mv-lookup
 use crate::{
     halo2_proofs::{
         plonk::{
@@ -12,9 +11,7 @@ use crate::{
         transcript::{EncodedChallenge, Transcript},
     },
     util::{
-        arithmetic::{root_of_unity, CurveAffine, Domain, FieldExt, Rotation},
         arithmetic::{root_of_unity, CurveAffine, Domain, Rotation},
-        izip,
         protocol::{
             CommonPolynomial, Expression, InstanceCommittingKey, Query, QuotientPolynomial,
         },
@@ -22,7 +19,7 @@ use crate::{
     },
     Protocol,
 };
-use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
+use halo2_base::halo2_proofs::halo2curves::ff::{FromUniformBytes, PrimeField};
 use num_integer::Integer;
 use std::{io, iter, mem::size_of};
 
@@ -94,7 +91,10 @@ pub fn compile<'a, C: CurveAffine, P: Params<'a, C>>(
     params: &P,
     vk: &VerifyingKey<C>,
     config: Config,
-) -> Protocol<C> {
+) -> Protocol<C> 
+where
+    C::ScalarExt: FromUniformBytes<64>
+{
     assert_eq!(vk.get_domain().k(), params.k());
 
     let cs = vk.cs();
@@ -120,7 +120,7 @@ pub fn compile<'a, C: CurveAffine, P: Params<'a, C>>(
         .chain(polynomials.random_query())
         .chain(polynomials.permutation_fixed_queries())
         .chain((0..num_proof).flat_map(move |t| polynomials.permutation_z_queries::<true>(t)))
-        .chain((0..num_proof).flat_map(move |t| polynomials.lookup_queries(t)))
+        .chain((0..num_proof).flat_map(move |t| polynomials.lookup_queries::<true>(t)))
         .collect();
 
     let queries = (0..num_proof)
@@ -129,7 +129,7 @@ pub fn compile<'a, C: CurveAffine, P: Params<'a, C>>(
                 .chain(polynomials.instance_queries(t))
                 .chain(polynomials.advice_queries(t))
                 .chain(polynomials.permutation_z_queries::<false>(t))
-                .chain(polynomials.lookup_queries(t))
+                .chain(polynomials.lookup_queries::<false>(t))
         })
         .chain(polynomials.fixed_queries())
         .chain(polynomials.permutation_fixed_queries())
@@ -184,10 +184,10 @@ struct Polynomials<'a, F: PrimeField> {
     num_challenge: Vec<usize>,
     advice_index: Vec<usize>,
     challenge_index: Vec<usize>,
-    num_lookup_m: usize,
+    num_lookup_permuted: usize,
     permutation_chunk_size: usize,
     num_permutation_z: usize,
-    num_lookup_phi: usize,
+    num_lookup_z: usize,
 }
 
 impl<'a, F: PrimeField> Polynomials<'a, F> {
@@ -240,13 +240,13 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
             num_challenge,
             advice_index,
             challenge_index,
-            num_lookup_m: cs.lookups().len(),
+            num_lookup_permuted: 2 * cs.lookups().len(),
             permutation_chunk_size,
             num_permutation_z: Integer::div_ceil(
                 &cs.permutation().get_columns().len(),
                 &permutation_chunk_size,
             ),
-            num_lookup_phi: cs.lookups().len(),
+            num_lookup_z: cs.lookups().len(),
         }
     }
 
@@ -262,8 +262,8 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
         iter::empty()
             .chain(self.num_advice.clone().iter().map(|num| self.num_proof * num))
             .chain([
-                self.num_proof * self.num_lookup_m,
-                self.num_proof * (self.num_permutation_z + self.num_lookup_phi) + self.zk as usize,
+                self.num_proof * self.num_lookup_permuted,
+                self.num_proof * (self.num_permutation_z + self.num_lookup_z) + self.zk as usize,
             ])
             .collect()
     }
@@ -380,17 +380,40 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
         }
     }
 
-    fn lookup_poly(&'a self, t: usize, i: usize) -> (usize, usize) {
-        let m = self.cs_witness_offset() + t * self.num_lookup_m + i;
-        let phi =
-            m + self.num_witness()[self.num_advice.len()] + self.num_proof * self.num_permutation_z;
-        (m, phi)
+    fn lookup_poly(&'a self, t: usize, i: usize) -> (usize, usize, usize) {
+        let permuted_offset = self.cs_witness_offset();
+        let z_offset = permuted_offset
+            + self.num_witness()[self.num_advice.len()]
+            + self.num_proof * self.num_permutation_z;
+        let z = z_offset + t * self.num_lookup_z + i;
+        let permuted_input = permuted_offset + 2 * (t * self.num_lookup_z + i);
+        let permuted_table = permuted_input + 1;
+        (z, permuted_input, permuted_table)
     }
 
-    fn lookup_queries(&'a self, t: usize) -> impl IntoIterator<Item = Query> + 'a {
-        (0..self.num_lookup_phi).flat_map(move |i| {
-            let (m, phi) = self.lookup_poly(t, i);
-            [Query::new(phi, 0), Query::new(phi, 1), Query::new(m, 0)]
+    fn lookup_queries<const EVAL: bool>(
+        &'a self,
+        t: usize,
+    ) -> impl IntoIterator<Item = Query> + 'a {
+        (0..self.num_lookup_z).flat_map(move |i| {
+            let (z, permuted_input, permuted_table) = self.lookup_poly(t, i);
+            if EVAL {
+                [
+                    Query::new(z, 0),
+                    Query::new(z, 1),
+                    Query::new(permuted_input, 0),
+                    Query::new(permuted_input, -1),
+                    Query::new(permuted_table, 0),
+                ]
+            } else {
+                [
+                    Query::new(z, 0),
+                    Query::new(permuted_input, 0),
+                    Query::new(permuted_table, 0),
+                    Query::new(permuted_input, -1),
+                    Query::new(z, 1),
+                ]
+            }
         })
     }
 
@@ -584,14 +607,17 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
         let l_last = &self.l_last();
         let l_active = &self.l_active();
         let beta = &self.beta();
+        let gamma = &self.gamma();
 
-        let polys = (0..self.num_lookup_phi)
+        let polys = (0..self.num_lookup_z)
             .map(|i| {
-                let (m, phi) = self.lookup_poly(t, i);
+                let (z, permuted_input, permuted_table) = self.lookup_poly(t, i);
                 (
-                    Expression::<F>::Polynomial(Query::new(phi, 0)),
-                    Expression::<F>::Polynomial(Query::new(phi, 1)),
-                    Expression::<F>::Polynomial(Query::new(m, 0)),
+                    Expression::<F>::Polynomial(Query::new(z, 0)),
+                    Expression::<F>::Polynomial(Query::new(z, 1)),
+                    Expression::<F>::Polynomial(Query::new(permuted_input, 0)),
+                    Expression::<F>::Polynomial(Query::new(permuted_input, -1)),
+                    Expression::<F>::Polynomial(Query::new(permuted_table, 0)),
                 )
             })
             .collect_vec();
@@ -607,38 +633,35 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
             .lookups()
             .iter()
             .zip(polys.iter())
-            .flat_map(|(lookup, (phi, phi_omega, m))| {
-                let inputs = lookup
-                    .input_expressions()
-                    .iter()
-                    .map(|expressions| compress(expressions) + beta)
-                    .collect_vec();
-                let table = &(compress(lookup.table_expressions()) + beta);
-                iter::empty().chain(Some(l_0 * phi)).chain(self.zk.then(|| l_last * phi)).chain(
-                    Some(if self.zk {
-                        let input_prod = &inputs.iter().cloned().product::<Expression<_>>();
-                        let lhs = table * input_prod * (phi_omega - phi);
-                        let rhs = (inputs.len() > 1)
-                            .then(|| {
-                                (0..inputs.len())
-                                    .map(|i| {
-                                        izip!(0.., &inputs)
-                                            .filter_map(|(j, input)| (i != j).then_some(input))
-                                            .cloned()
-                                            .product()
-                                    })
-                                    .sum::<Expression<_>>()
-                                    * table
-                            })
-                            .unwrap_or_else(|| table.clone())
-                            - m * input_prod;
-
-                        l_active * (lhs - rhs)
-                    } else {
-                        unimplemented!()
-                    }),
-                )
-            })
+            .flat_map(
+                |(
+                    lookup,
+                    (z, z_omega, permuted_input, permuted_input_omega_inv, permuted_table),
+                )| {
+                    let input = compress(lookup.input_expressions());
+                    let table = compress(lookup.table_expressions());
+                    iter::empty()
+                        .chain(Some(l_0 * (one - z)))
+                        .chain(self.zk.then(|| l_last * (z * z - z)))
+                        .chain(Some(if self.zk {
+                            l_active
+                                * (z_omega * (permuted_input + beta) * (permuted_table + gamma)
+                                    - z * (input + beta) * (table + gamma))
+                        } else {
+                            z_omega * (permuted_input + beta) * (permuted_table + gamma)
+                                - z * (input + beta) * (table + gamma)
+                        }))
+                        .chain(self.zk.then(|| l_0 * (permuted_input - permuted_table)))
+                        .chain(Some(if self.zk {
+                            l_active
+                                * (permuted_input - permuted_table)
+                                * (permuted_input - permuted_input_omega_inv)
+                        } else {
+                            (permuted_input - permuted_table)
+                                * (permuted_input - permuted_input_omega_inv)
+                        }))
+                },
+            )
             .collect_vec()
     }
 
@@ -703,7 +726,9 @@ impl<C: CurveAffine> Transcript<C, MockChallenge> for MockTranscript<C::Scalar> 
     }
 }
 
-fn transcript_initial_state<C: CurveAffine>(vk: &VerifyingKey<C>) -> C::Scalar {
+fn transcript_initial_state<C: CurveAffine>(vk: &VerifyingKey<C>) -> C::Scalar 
+where C::ScalarExt: FromUniformBytes<64>,
+{
     let mut transcript = MockTranscript::default();
     vk.hash_into(&mut transcript).unwrap();
     transcript.0
