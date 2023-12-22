@@ -622,16 +622,7 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
             })
             .collect_vec();
 
-        let compress_input = |expressions: &[Vec<plonk::Expression<F>>]| {
-            Expression::DistributePowers(
-                expressions
-                    .iter()
-                    .flat_map(|exprs| exprs.iter().map(|expr| self.convert(expr, t)))
-                    .collect(),
-                self.theta().into(),
-            )
-        };
-        let compress_table = |expressions: &[plonk::Expression<F>]| {
+        let compress = |expressions: &'a [plonk::Expression<F>]| {
             Expression::DistributePowers(
                 expressions.iter().map(|expression| self.convert(expression, t)).collect(),
                 self.theta().into(),
@@ -647,8 +638,8 @@ impl<'a, F: PrimeField> Polynomials<'a, F> {
                     lookup,
                     (z, z_omega, permuted_input, permuted_input_omega_inv, permuted_table),
                 )| {
-                    let input = compress_input(lookup.input_expressions());
-                    let table = compress_table(lookup.table_expressions());
+                    let input = compress(lookup.input_expressions());
+                    let table = compress(lookup.table_expressions());
                     iter::empty()
                         .chain(Some(l_0 * (one - z)))
                         .chain(self.zk.then(|| l_last * (z * z - z)))
